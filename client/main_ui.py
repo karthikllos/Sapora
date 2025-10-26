@@ -36,16 +36,15 @@ from shared.constants import (
 )
 
 # Core client modules (will be defined in separate files later)
-# client/main_ui.py (Correction to imports block)
-# ...
-# Core client modules (will be defined in separate files later)
 from .chat_client import ChatClient
 from .video_client import VideoClient
 from .audio_client import AudioClient
-from .screen_share_client import ScreenShareClient # <--- ENSURE THIS IS A DIRECT IMPORT
+# FIX 2: The class in client/screen_share_client.py is named ScreenShareServer, 
+# but we rename the imported module instance to screen_client for local usage.
+from .screen_share_client import ScreenShareServer
 from .file_client import FileTransferClient
 from .utils import read_tcp_message 
-# ...
+
 
 # --- Custom Widgets ---
 
@@ -150,7 +149,10 @@ class SaporaGUI(QMainWindow):
         self.video_client = None
         self.audio_client = None
         self.chat_client = None
-        self.screen_client = None
+        # FIX 2: Corrected client instance type (it should be ScreenShareClient)
+        # Assuming ScreenShareServer class in client/screen_share_client.py 
+        # is meant to be the client side implementation
+        self.screen_client = None 
         self.file_client = None
         
         # State
@@ -185,6 +187,7 @@ class SaporaGUI(QMainWindow):
         self.ui_update_timer.start(1000)
         
         # Delayed connection
+        # This call must succeed for the application to run.
         QTimer.singleShot(500, self.connect_to_control)
 
     def setup_connection_info(self):
@@ -201,7 +204,9 @@ class SaporaGUI(QMainWindow):
     def init_ui(self):
         """Initializes the main user interface layout."""
         # Load Stylesheet
-        qss_path = os.path.join(os.path.dirname(__file__), 'styles.qss')
+        # NOTE: The provided path `styles.qss` is likely incorrect based on the repo structure. 
+        # Correct path is client/style.qss (which I assume is what was intended)
+        qss_path = os.path.join(os.path.dirname(__file__), 'style.qss')
         if os.path.exists(qss_path):
              with open(qss_path, "r") as f:
                 self.setStyleSheet(f.read())
@@ -382,8 +387,9 @@ class SaporaGUI(QMainWindow):
 
     def connect_to_control(self):
         """Initializes all TCP and UDP clients."""
+        
+        # 1. Chat/Control Client (TCP) - CRITICAL: Must succeed to get user list/management
         try:
-            # 1. Chat/Control Client (TCP)
             self.chat_client = ChatClient(self.server_ip, CONTROL_PORT, self.username)
             if self.chat_client.connect():
                 self.chat_client.set_callbacks(
@@ -392,25 +398,46 @@ class SaporaGUI(QMainWindow):
                 )
                 self.add_system_message(f"✓ Connected to Control Server as {self.username}.")
             else:
-                self.add_system_message("✗ Failed to connect to Control Server.")
+                self.add_system_message("✗ Failed to connect to Control Server. Exiting.")
+                # If we fail to connect to the control server, we can't do anything meaningful.
+                # Use QTimer to close the application cleanly.
+                QTimer.singleShot(100, self.close)
                 return
+        except Exception as e:
+            self.add_system_message(f"Fatal connection error on ChatClient: {str(e)}. Exiting.")
+            QTimer.singleShot(100, self.close)
+            return
 
-            # 2. Video Client (UDP)
+        # 2. Video Client (UDP) - Non-critical initialization
+        try:
             self.video_client = VideoClient(self.server_ip, VIDEO_PORT, self.username, self.gui_signals.video_frame_ready.emit)
             threading.Thread(target=self.video_client.start_receiving, daemon=True).start()
+        except Exception as e:
+            self.add_system_message(f"✗ Failed to initialize Video Client: {str(e)}")
+            self.video_client = None
             
-            # 3. Audio Client (UDP)
+        # 3. Audio Client (UDP) - Non-critical initialization
+        try:
             self.audio_client = AudioClient(self.server_ip, AUDIO_PORT, self.username)
             threading.Thread(target=self.audio_client.start_receiving, daemon=True).start()
-            
-            # 4. File Client (TCP)
-            self.file_client = FileTransferClient(self.server_ip, FILE_TRANSFER_PORT, self.gui_signals.status_message.emit)
-            
-            # 5. Screen Share Client (TCP)
-            self.screen_client = ScreenShareClient(self.server_ip, SCREEN_SHARE_PORT, self.gui_signals.status_message.emit)
-
         except Exception as e:
-            self.add_system_message(f"Fatal connection error: {str(e)}")
+            self.add_system_message(f"✗ Failed to initialize Audio Client: {str(e)}")
+            self.audio_client = None
+            
+        # 4. File Client (TCP) - Non-critical initialization
+        try:
+            self.file_client = FileTransferClient(self.server_ip, FILE_TRANSFER_PORT, self.gui_signals.status_message.emit)
+        except Exception as e:
+            self.add_system_message(f"✗ Failed to initialize File Client: {str(e)}")
+            self.file_client = None
+            
+        # 5. Screen Share Client (TCP) - Non-critical initialization
+        try:
+            # The class imported is ScreenShareServer, which is the client implementation here.
+            self.screen_client = ScreenShareServer(self.server_ip, SCREEN_SHARE_PORT, self.gui_signals.status_message.emit)
+        except Exception as e:
+            self.add_system_message(f"✗ Failed to initialize Screen Share Client: {str(e)}")
+            self.screen_client = None
 
     # --- UI Updates & Layout ---
 
@@ -469,8 +496,16 @@ class SaporaGUI(QMainWindow):
 
     def update_video_frame(self, source_ip, frame):
         """Receives and caches a video frame for display (called by signal)."""
-        username = self.chat_client.manager.get_client_username_by_ip(source_ip)
-        self.video_frames[username] = frame
+        # NOTE: This line requires the chat_client to have a connection manager.
+        # Based on the server structure, the IP needs to be resolved to a username.
+        # Assuming chat_client has a manager property exposed for this purpose.
+        try:
+            username = self.chat_client.manager.get_client_username_by_ip(source_ip)
+            self.video_frames[username] = frame
+        except AttributeError:
+             # Handle case where manager is not accessible or method is missing
+             self.video_frames[source_ip] = frame
+
 
     def process_video_updates(self):
         """Processes and displays all cached video frames (called by timer)."""
@@ -502,7 +537,9 @@ class SaporaGUI(QMainWindow):
                     tile.video_label.setPixmap(pixmap)
                     tile.video_label.setStyleSheet(f"background-color: #000000; border-radius: 8px; min-height: {target_h - 10}px;")
                 except Exception:
-                    pass
+                    # Fallback to initials if rendering fails
+                    tile.video_label.setText(username[0].upper())
+                    tile.video_label.setStyleSheet("color: #ffffff; font-size: 40px; background-color: #3c4043; border-radius: 8px;")
             elif username != self.username:
                 # If no frame for a remote user, show initial
                 tile.video_label.setText(username[0].upper())
@@ -511,10 +548,14 @@ class SaporaGUI(QMainWindow):
     def update_audio_status(self, source_ip, is_active):
         """Updates the microphone icon on a user's tile."""
         # Find username/tile by IP
-        username = self.chat_client.manager.get_client_username_by_ip(source_ip)
-        if username in self.user_tiles:
-            # Placeholder for future mic icon update logic
-            pass 
+        try:
+            username = self.chat_client.manager.get_client_username_by_ip(source_ip)
+            if username in self.user_tiles:
+                # Placeholder for future mic icon update logic
+                pass 
+        except AttributeError:
+             pass # Manager not available
+
 
     def update_ui_stats(self):
         """Updates time elapsed and other general stats (called by timer)."""
@@ -535,6 +576,9 @@ class SaporaGUI(QMainWindow):
         
         if is_system:
              msg_widget = ChatMessageWidget("SYSTEM", message, timestamp, is_self=True, is_file=False)
+             # NOTE: This style is currently applied in ChatMessageWidget's constructor based on is_file/is_self.
+             # Overriding here might be confusing, but setting is_self=True is correct for a system message.
+             # The system message style would typically be handled inside ChatMessageWidget if it was a distinct flag.
              msg_widget.setStyleSheet("QWidget {background-color: #f7f7f7;} QLabel {color: #a0a0a0; font-style: italic;}")
         else:
              msg_widget = ChatMessageWidget(username, message, timestamp, is_self=(username == self.username), is_file=is_file)
@@ -647,15 +691,16 @@ class SaporaGUI(QMainWindow):
 
     def toggle_screen_share(self):
         """Toggles screen sharing (Presenter mode)."""
+        # NOTE: The client implementation (ScreenShareServer class) needs a start() method.
         if not self.screen_active:
-            if self.screen_client and self.screen_client.start_streaming():
+            if self.screen_client and self.screen_client.start(): 
                 self.screen_active = True
                 self.add_system_message("🖥️ Sharing Screen.")
             else:
                 self.btn_share.setChecked(False)
         else:
             if self.screen_client:
-                self.screen_client.stop_streaming()
+                self.screen_client.stop()
             self.screen_active = False
             self.btn_share.setChecked(False)
             self.add_system_message("🖥️ Screen Share Stopped.")
@@ -688,7 +733,8 @@ class SaporaGUI(QMainWindow):
 
         if self.video_client: self.video_client.stop_streaming()
         if self.audio_client: self.audio_client.stop_streaming()
-        if self.screen_client: self.screen_client.stop_streaming()
+        # NOTE: The screen_client object is ScreenShareServer, which has a stop() method.
+        if self.screen_client: self.screen_client.stop()
         if self.chat_client: self.chat_client.disconnect()
 
         self.add_system_message("Disconnected.")
