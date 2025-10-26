@@ -11,7 +11,7 @@ import time
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from shared.constants import BUFFER_SIZE, SOCKET_TIMEOUT
+from shared.constants import BUFFER_SIZE, SOCKET_TIMEOUT,CONTROL_PORT
 from shared.protocol import CMD_REGISTER, CMD_HEARTBEAT, CMD_DISCONNECT, MSG_CHAT
 from server.utils import read_tcp_message, unpack_message, pack_message, get_message_type_name
 

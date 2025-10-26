@@ -8,12 +8,17 @@ import os
 import struct
 import hashlib
 from pathlib import Path
+import sys 
 
-# Import constants/protocol/utils
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- CRITICAL FIX: Add project root to path for shared/ imports ---
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+# -----------------------------------------------------------------
+
 from shared.constants import (
-    FILE_TRANSFER_PORT, FILE_CHUNK_SIZE, MAX_FILE_SIZE, BUFFER_SIZE, SOCKET_TIMEOUT,
+    FILE_TRANSFER_PORT, FILE_CHUNK_SIZE, 
+    MAX_FILE_SIZE, BUFFER_SIZE, SOCKET_TIMEOUT,
     STORAGE_DIR
 )
 from shared.protocol import (
@@ -21,7 +26,55 @@ from shared.protocol import (
     FILE_ACK_SUCCESS, FILE_ACK_FAILURE
 )
 from server.utils import read_tcp_message, unpack_message, pack_message
-from shared.helpers import unpack_file_metadata, pack_file_metadata # Using unpacked helpers directly
+from shared.helpers import unpack_file_metadata, pack_file_metadata # This import will now succeed
+
+# ... (rest of file_server.py remains the same)
+
+class FileTransferServer(threading.Thread):
+    """Main server component for handling file transfers."""
+    
+    def __init__(self, manager):
+        super().__init__(daemon=True)
+        self.manager = manager
+        self.server_socket = None
+        self.storage_dir = Path(STORAGE_DIR)
+        self.storage_dir.mkdir(exist_ok=True)
+        
+    def run(self):
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.bind(('0.0.0.0', FILE_TRANSFER_PORT))
+            self.server_socket.listen(5)
+            self.server_socket.settimeout(SOCKET_TIMEOUT)
+            
+            print(f"FileTransferServer: Listening on TCP port {FILE_TRANSFER_PORT}. Storage: {self.storage_dir.absolute()}")
+            
+            while self.manager.running:
+                try:
+                    client_socket, address = self.server_socket.accept()
+                    
+                    handler = FileHandler(self.manager, client_socket, address)
+                    handler.start()
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.manager.running:
+                        print(f"FileTransferServer: Error accepting connection: {e}")
+                        
+        except Exception as e:
+            print(f"FileTransferServer: Fatal error: {e}")
+        finally:
+            self.stop()
+            
+    def stop(self):
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        print("FileTransferServer: Server stopped.")
 
 class FileHandler(threading.Thread):
     """Handles a single file transfer client connection."""
@@ -34,7 +87,7 @@ class FileHandler(threading.Thread):
         self.ip = address[0]
         self.storage_dir = Path(STORAGE_DIR)
         
-        self.sock.settimeout(SOCKET_TIMEOUT * 10) # Extended timeout for transfers
+        self.sock.settimeout(SOCKET_TIMEOUT * 10) 
         
     def run(self):
         print(f"FileHandler: Started for {self.ip}")
@@ -65,7 +118,6 @@ class FileHandler(threading.Thread):
         """Processes an upload initiation request."""
         print(f"FileHandler: Upload requested from {self.ip}")
         
-        # 1. Receive/Unpack Metadata
         try:
             metadata = unpack_file_metadata(payload)
             filename = metadata['filename']
@@ -81,7 +133,6 @@ class FileHandler(threading.Thread):
             self.sock.sendall(pack_message(FILE_ACK_FAILURE, b"File too large"))
             return
 
-        # 2. Receive File Chunks
         file_path = self.storage_dir / filename
         bytes_received = 0
         try:
@@ -99,7 +150,6 @@ class FileHandler(threading.Thread):
                     f.write(chunk_payload)
                     bytes_received += len(chunk_payload)
             
-            # 3. Verification & Acknowledgment
             if bytes_received != filesize:
                  raise IOError("Received file size mismatch.")
 
@@ -133,7 +183,6 @@ class FileHandler(threading.Thread):
         
         if not file_path.exists() or not file_path.is_file():
             print(f"FileHandler: File not found: {filename}")
-            # Acknowledge failure if file doesn't exist
             self.sock.sendall(pack_message(FILE_ACK_FAILURE, b"File not found"))
             return
 
@@ -141,16 +190,15 @@ class FileHandler(threading.Thread):
         checksum = self._calculate_md5(file_path)
 
         try:
-            # 1. Send Metadata
             metadata = pack_file_metadata(filename, filesize, checksum)
             self.sock.sendall(pack_message(FILE_METADATA, metadata))
 
-            # 2. Send File Chunks
             with open(file_path, 'rb') as f:
                 while True:
                     chunk = f.read(FILE_CHUNK_SIZE)
                     if not chunk:
                         break
+                    
                     self.sock.sendall(pack_message(FILE_CHUNK, chunk))
             
             print(f"FileHandler: Successfully sent {filename} ({filesize} bytes).")
@@ -165,49 +213,3 @@ class FileHandler(threading.Thread):
             for chunk in iter(lambda: f.read(FILE_CHUNK_SIZE), b''):
                 md5_hash.update(chunk)
         return md5_hash.hexdigest()
-
-class FileTransferServer(threading.Thread):
-    """Main server component for handling file transfers."""
-    
-    def __init__(self, manager):
-        super().__init__(daemon=True)
-        self.manager = manager
-        self.server_socket = None
-        self.storage_dir = Path(STORAGE_DIR)
-        self.storage_dir.mkdir(exist_ok=True)
-        
-    def run(self):
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', FILE_TRANSFER_PORT))
-            self.server_socket.listen(5)
-            self.server_socket.settimeout(SOCKET_TIMEOUT)
-            
-            print(f"FileTransferServer: Listening on TCP port {FILE_TRANSFER_PORT}. Storage: {self.storage_dir.absolute()}")
-            
-            while self.manager.running:
-                try:
-                    client_socket, address = self.server_socket.accept()
-                    # Hand off to FileHandler thread
-                    handler = FileHandler(self.manager, client_socket, address)
-                    handler.start()
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.manager.running:
-                        print(f"FileTransferServer: Error accepting connection: {e}")
-                        
-        except Exception as e:
-            print(f"FileTransferServer: Fatal error: {e}")
-        finally:
-            self.stop()
-            
-    def stop(self):
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except:
-                pass
-        print("FileTransferServer: Server stopped.")

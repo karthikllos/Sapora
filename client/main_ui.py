@@ -36,12 +36,16 @@ from shared.constants import (
 )
 
 # Core client modules (will be defined in separate files later)
-from client.chat_client import ChatClient
-from client.video_client import VideoClient
-from client.audio_client import AudioClient
-from client.screen_share_client import ScreenShareClient
-from client.file_client import FileTransferClient
-from client.utils import read_tcp_message # Import client-side protocol/utility
+# client/main_ui.py (Correction to imports block)
+# ...
+# Core client modules (will be defined in separate files later)
+from .chat_client import ChatClient
+from .video_client import VideoClient
+from .audio_client import AudioClient
+from .screen_share_client import ScreenShareClient # <--- ENSURE THIS IS A DIRECT IMPORT
+from .file_client import FileTransferClient
+from .utils import read_tcp_message 
+# ...
 
 # --- Custom Widgets ---
 

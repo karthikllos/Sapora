@@ -9,14 +9,19 @@ import signal
 import threading
 from datetime import datetime
 
-# Add parent directory to path to import constants/protocol
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- CRITICAL FIX: Add project root to path for shared/ imports ---
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+# -----------------------------------------------------------------
+
+# Import constants/protocol/services
 from shared.constants import (
     CONTROL_PORT, CHAT_PORT, VIDEO_PORT, AUDIO_PORT, 
     FILE_TRANSFER_PORT, SCREEN_SHARE_PORT
 )
 from server.connection_manager import ConnectionManager
-from server.tcp_handler import ControlServer # ControlServer is now the main TCP handler for Control/Chat
+from server.tcp_handler import ControlServer 
 from server.udp_video_server import UDPVideoServer
 from server.udp_audio_server import UDPAudioServer
 from server.file_server import FileTransferServer
@@ -30,7 +35,6 @@ class UnifiedServer:
         self.services = []
         self.running = False
         
-        # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
@@ -43,7 +47,6 @@ class UnifiedServer:
         
         self.running = True
         
-        # Initialize and start services
         service_configs = [
             ('Control/Chat', ControlServer, CONTROL_PORT),
             ('File Transfer', FileTransferServer, FILE_TRANSFER_PORT),
@@ -54,13 +57,12 @@ class UnifiedServer:
         
         for name, service_class, port in service_configs:
             try:
-                # All services are instantiated with the central ConnectionManager
                 service_instance = service_class(self.manager) 
                 self.services.append(service_instance)
                 
                 service_instance.start()
                 print(f"✓ {name:20s} → Port {port:5d} [RUNNING]")
-                time.sleep(0.2) # Stagger startups
+                time.sleep(0.2)
             except Exception as e:
                 print(f"✗ {name:20s} → Port {port:5d} [FAILED: {e}]")
         
@@ -68,7 +70,6 @@ class UnifiedServer:
         print("🚀 ALL SERVICES ACTIVE")
         print("=" * 70)
         
-        # Keep the main thread alive
         try:
             while self.running:
                 time.sleep(1)
@@ -87,7 +88,7 @@ class UnifiedServer:
         print("=" * 70)
         
         self.running = False
-        self.manager.stop() # Stops manager's threads (like heartbeat) and closes control sockets
+        self.manager.stop() 
         
         for service in self.services:
             name = service.__class__.__name__
@@ -107,7 +108,6 @@ class UnifiedServer:
         """Handles shutdown signals."""
         print(f"\n\n⚠️ Received signal {signum}")
         self.stop_all()
-        # Exit outside of the main thread context if possible, but sys.exit(0) is safest here.
         os._exit(0) 
 
 def main():

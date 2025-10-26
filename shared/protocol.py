@@ -4,11 +4,13 @@ Defines all message types used in the application.
 """
 
 # --- Message Type Constants (1 byte) ---
+
 # CONTROL & HANDSHAKE (TCP: 5000)
 CMD_REGISTER = 0x01
 CMD_HEARTBEAT = 0x02
 CMD_USER_LIST = 0x03
 CMD_DISCONNECT = 0x04
+SCREEN_SHARE = 0x06 # <-- FIX: The required constant for screen_share_server.py
 
 # CHAT (TCP: 5001)
 MSG_CHAT = 0x10
@@ -36,6 +38,7 @@ MESSAGE_TYPES = {
     CMD_HEARTBEAT: "HEARTBEAT",
     CMD_USER_LIST: "USER_LIST",
     CMD_DISCONNECT: "DISCONNECT",
+    SCREEN_SHARE: "SCREEN_SHARE",
 
     MSG_CHAT: "CHAT",
 

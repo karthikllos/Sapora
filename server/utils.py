@@ -7,13 +7,20 @@ import json
 import time
 import sys
 import os
+import numpy as np 
+import socket # Added socket import for robust read_tcp_message
 
-# Add parent directory to path to import constants/protocol
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- CRITICAL FIX: Add project root to path for shared/ imports ---
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+# -----------------------------------------------------------------
+
 from shared.constants import (
-    HEADER_SIZE, PROTOCOL_VERSION, MAX_MESSAGE_SIZE, AUDIO_CHUNK, AUDIO_FORMAT_PCM
+    HEADER_SIZE, PROTOCOL_VERSION, MAX_MESSAGE_SIZE, AUDIO_CHUNK, AUDIO_FORMAT_PCM,
+    AUDIO_CHANNELS, BUFFER_SIZE # Added BUFFER_SIZE for read_tcp_message
 )
-from shared.protocol import MESSAGE_TYPES, CMD_USER_LIST
+from shared.protocol import MESSAGE_TYPES, CMD_USER_LIST, get_message_type_name
 
 
 # --- Protocol Serialization Helpers ---
@@ -25,17 +32,13 @@ def pack_message(msg_type, payload=b""):
     
     payload_length = len(payload)
     
-    # Check max size (simplified to allow buffer_size limits for streaming data)
     if payload_length > MAX_MESSAGE_SIZE:
-        # For a full implementation, large payloads like file chunks would be handled
-        # via chunking logic *before* calling this.
-        if msg_type not in (STREAM_VIDEO, STREAM_AUDIO):
+        if msg_type not in (0x40, 0x41):
              raise ValueError(f"Payload size {payload_length} exceeds maximum {MAX_MESSAGE_SIZE}")
 
-    sequence_number = 0 # Simple implementation uses static 0
+    sequence_number = 0 
     reserved = 0
     
-    # Format: !BBIHH = network byte order, unsigned char, unsigned char, unsigned int, unsigned int, unsigned short
     header = struct.pack(
         '!BBIHH',
         PROTOCOL_VERSION,    # 1 byte (B)
@@ -63,11 +66,9 @@ def unpack_message(data):
     except struct.error as e:
         raise ValueError(f"Failed to unpack header: {e}")
     
-    # Validate payload length only if we have the full message
     if len(payload) < payload_length:
         raise ValueError(f"Incomplete payload: expected {payload_length}, got {len(payload)}")
 
-    # Truncate payload to expected length if more data was received in one go (TCP stream)
     payload = payload[:payload_length]
 
     if version != PROTOCOL_VERSION:
@@ -78,16 +79,19 @@ def unpack_message(data):
 def read_tcp_message(sock):
     """Reads a complete message packet from a TCP socket."""
     # 1. Read header (fixed size)
-    header = sock.recv(HEADER_SIZE)
-    if not header:
+    try:
+        header = sock.recv(HEADER_SIZE)
+        if not header or len(header) < HEADER_SIZE:
+            return None
+    except socket.timeout:
+        return None
+    except Exception:
         return None
     
     # 2. Parse payload length
     try:
-        # Payload length is at byte index 2, is a 4-byte unsigned integer (I)
         payload_length = struct.unpack('!I', header[2:6])[0]
     except struct.error:
-        # Corrupted header
         return None
 
     # 3. Read payload (variable size)
@@ -95,7 +99,7 @@ def read_tcp_message(sock):
     while len(payload) < payload_length:
         chunk = sock.recv(min(payload_length - len(payload), BUFFER_SIZE))
         if not chunk:
-            return None # Connection closed while reading payload
+            return None 
         payload += chunk
         
     return header + payload
@@ -105,22 +109,18 @@ def read_tcp_message(sock):
 def broadcast_user_list(manager):
     """Packs and sends the current user list to all connected TCP clients."""
     user_list = manager.get_user_list()
-    # Serialize the list of dicts to JSON payload
     user_list_json = json.dumps(user_list)
     
     user_list_packet = pack_message(CMD_USER_LIST, user_list_json.encode('utf-8'))
     
-    # Send to all connected clients on the control/chat ports
     disconnected = []
     
-    # Broadcast to control clients (where chat handler will also listen)
     for addr, client_info in list(manager.control_clients.items()):
         try:
             client_info['socket'].sendall(user_list_packet)
         except Exception:
             disconnected.append(client_info['socket'])
     
-    # Clean up disconnected clients in the main manager thread
     for sock in disconnected:
         manager.remove_client(sock)
         
@@ -132,13 +132,10 @@ def mix_audio_chunks(chunks):
         return None
         
     try:
-        # Convert all chunks to numpy arrays (int16)
         arrays = []
         for chunk in chunks:
-            # Need to ensure the chunk is the correct size before conversion
-            bytes_per_chunk = AUDIO_CHUNK * AUDIO_CHANNELS * AUDIO_FORMAT_PCM // 8
+            bytes_per_chunk = AUDIO_CHUNK * AUDIO_CHANNELS * AUDIO_FORMAT_PCM
             if len(chunk) != bytes_per_chunk:
-                # Pad to expected chunk size if necessary (or simply skip)
                 continue 
 
             arr = np.frombuffer(chunk, dtype=np.int16)
@@ -147,7 +144,6 @@ def mix_audio_chunks(chunks):
         if not arrays:
             return None
 
-        # Determine max length and pad (critical for UDP chunk synchronization)
         max_len = max(len(arr) for arr in arrays)
         padded = []
         for arr in arrays:
@@ -157,12 +153,9 @@ def mix_audio_chunks(chunks):
             else:
                 padded.append(arr)
         
-        # Mix: Average all audio streams, then convert back to int16
-        # np.mean converts to float by default, so we cast back to int16
         mixed = np.mean(padded, axis=0).astype(np.int16)
         
         return mixed.tobytes()
         
     except Exception as e:
-        # print(f"Audio Mix Error: {e}") # Log on server side
         return None
