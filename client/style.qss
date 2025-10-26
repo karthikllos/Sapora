@@ -1,0 +1,93 @@
+/*
+ * Sapora LAN Collaboration Suite - Zoom-like minimal light theme (modified for dark base)
+ * Note: PyQt5's native Fusion style handles most of the look; this applies accents.
+ */
+
+QMainWindow {
+    background-color: #f7f7ff; /* Light gray window background */
+}
+
+QWidget {
+    color: #1f1f1f; /* Dark text color */
+    background-color: #f7f7f7; /* Light base for widgets */
+    font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+QSplitter::handle {
+    background-color: #e0e0e0;
+    width: 2px;
+}
+
+/* --- Buttons (Toolbar/Accents) --- */
+QPushButton {
+    background-color: #e0e0e0;
+    color: #1f1f1f;
+    border: 1px solid #d0d0d0;
+    border-radius: 18px; /* Rounded corners */
+    padding: 8px 15px;
+    min-height: 36px;
+    min-width: 36px;
+}
+
+QPushButton:hover {
+    background-color: #d0d0d0;
+}
+
+/* Accent for 'Share Screen' (Blue) */
+QPushButton#btn_share:checked {
+    background-color: #1a73e8; /* Google Blue */
+    color: white;
+    border: 1px solid #1a73e8;
+}
+
+/* Accent for 'Mic' / 'Camera' (Red/Green - Assuming Fusion handles the color changes) */
+QPushButton:checked {
+    background-color: #ea4335; /* Red for active Mic/Cam */
+    color: white;
+    border: 1px solid #ea4335;
+}
+
+/* Leave Button (Prominent Red) */
+QPushButton#btn_leave {
+    background-color: #ea4335;
+    color: white;
+    border: none;
+    font-weight: bold;
+    padding: 8px 25px;
+}
+
+QPushButton#btn_leave:hover {
+    background-color: #c5221f;
+}
+
+/* Chat Input Area */
+QLineEdit, QTextEdit {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+/* Video Grid Tiles */
+QFrame#VideoTile {
+    background-color: #000000;
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+}
+
+/* Chat Panel */
+QWidget#ChatPanel {
+    background-color: #ffffff;
+    border-left: 1px solid #e0e0e0;
+}
+
+/* Chat Messages */
+QLabel#ChatMessageUsername {
+    color: #1a73e8; /* Blue username */
+    font-weight: bold;
+}
+
+QLabel#ChatMessageTime {
+    color: #9aa0a6; /* Gray timestamp */
+    font-size: 10px;
+}

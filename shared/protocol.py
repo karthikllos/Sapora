@@ -1,0 +1,59 @@
+"""
+Sapora LAN Collaboration Suite - Protocol Definitions
+Defines all message types used in the application.
+"""
+
+# --- Message Type Constants (1 byte) ---
+# CONTROL & HANDSHAKE (TCP: 5000)
+CMD_REGISTER = 0x01
+CMD_HEARTBEAT = 0x02
+CMD_USER_LIST = 0x03
+CMD_DISCONNECT = 0x04
+
+# CHAT (TCP: 5001)
+MSG_CHAT = 0x10
+
+# FILE TRANSFER (TCP: 5002)
+FILE_METADATA = 0x20
+FILE_CHUNK = 0x21
+FILE_REQUEST_UPLOAD = 0x22
+FILE_REQUEST_DOWNLOAD = 0x23
+FILE_ACK_SUCCESS = 0x24
+FILE_ACK_FAILURE = 0x25
+
+# SCREEN SHARE (TCP: 5003)
+SCREEN_FRAME = 0x30
+SCREEN_START = 0x31
+SCREEN_STOP = 0x32
+
+# STREAMING (UDP: 6000/6001)
+STREAM_VIDEO = 0x40
+STREAM_AUDIO = 0x41
+
+# --- Message Type Names (for debugging/logging) ---
+MESSAGE_TYPES = {
+    CMD_REGISTER: "REGISTER",
+    CMD_HEARTBEAT: "HEARTBEAT",
+    CMD_USER_LIST: "USER_LIST",
+    CMD_DISCONNECT: "DISCONNECT",
+
+    MSG_CHAT: "CHAT",
+
+    FILE_METADATA: "FILE_METADATA",
+    FILE_CHUNK: "FILE_CHUNK",
+    FILE_REQUEST_UPLOAD: "FILE_UPLOAD_REQ",
+    FILE_REQUEST_DOWNLOAD: "FILE_DOWNLOAD_REQ",
+    FILE_ACK_SUCCESS: "FILE_ACK_SUCCESS",
+    FILE_ACK_FAILURE: "FILE_ACK_FAILURE",
+
+    SCREEN_FRAME: "SCREEN_FRAME",
+    SCREEN_START: "SCREEN_START",
+    SCREEN_STOP: "SCREEN_STOP",
+
+    STREAM_VIDEO: "VIDEO",
+    STREAM_AUDIO: "AUDIO",
+}
+
+def get_message_type_name(msg_type):
+    """Get the name of a message type from its code"""
+    return MESSAGE_TYPES.get(msg_type, f"UNKNOWN({hex(msg_type)})")
