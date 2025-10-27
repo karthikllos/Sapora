@@ -48,16 +48,20 @@ class UnifiedServer:
         self.running = True
         
         service_configs = [
-            ('Control/Chat', ControlServer, CONTROL_PORT),
-            ('File Transfer', FileTransferServer, FILE_TRANSFER_PORT),
-            ('Screen Share', ScreenShareServer, SCREEN_SHARE_PORT),
-            ('UDP Video', UDPVideoServer, VIDEO_PORT),
-            ('UDP Audio', UDPAudioServer, AUDIO_PORT)
+            ('Control/Chat', ControlServer, CONTROL_PORT, True),
+            ('File Transfer', FileTransferServer, FILE_TRANSFER_PORT, True),
+            ('Screen Share', ScreenShareServer, SCREEN_SHARE_PORT, False),
+            ('UDP Video', UDPVideoServer, VIDEO_PORT, True),
+            ('UDP Audio', UDPAudioServer, AUDIO_PORT, True)
         ]
         
-        for name, service_class, port in service_configs:
+        for name, service_class, port, needs_manager in service_configs:
             try:
-                service_instance = service_class(self.manager) 
+                # Some services need ConnectionManager, others don't
+                if needs_manager:
+                    service_instance = service_class(self.manager)
+                else:
+                    service_instance = service_class(port)
                 self.services.append(service_instance)
                 
                 service_instance.start()
