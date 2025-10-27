@@ -33,8 +33,8 @@ from shared.helpers import unpack_file_metadata, pack_file_metadata
 class FileTransferServer(threading.Thread):
     """Main server component for handling file transfers."""
 
-    def _init_(self, manager):
-        super()._init_(daemon=True)
+    def __init__(self, manager):
+        super().__init__(daemon=True)
         self.manager = manager
         self.server_socket = None
         self.storage_dir = Path(STORAGE_DIR)
@@ -84,8 +84,8 @@ class FileTransferServer(threading.Thread):
 class FileHandler(threading.Thread):
     """Handles a single file transfer client connection."""
 
-    def _init_(self, manager, client_socket, address, storage_dir: Path):
-        super()._init_(daemon=True)
+    def __init__(self, manager, client_socket, address, storage_dir: Path):
+        super().__init__(daemon=True)
         self.manager = manager
         self.sock = client_socket
         self.address = address
