@@ -6,14 +6,13 @@ import threading
 import socket
 import time
 from datetime import datetime
-
 # Import constants/protocol
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.constants import (
     HEARTBEAT_INTERVAL, VIDEO_PORT, AUDIO_PORT, CONTROL_PORT, 
-    CONNECTION_TIMEOUT, SOCKET_TIMEOUT
+    CONNECTION_TIMEOUT, SOCKET_TIMEOUT,CLIENT_IDLE_TIMEOUT
 )
 from shared.protocol import CMD_HEARTBEAT, CMD_USER_LIST, CMD_DISCONNECT
 from server.utils import broadcast_user_list, pack_message
@@ -175,7 +174,7 @@ class ConnectionManager:
                         sock.send(heartbeat_packet) # Send heartbeat
                         
                         # Check for stale connection based on last_seen
-                        if time.time() - info['last_seen'] > CONNECTION_TIMEOUT:
+                        if time.time() - info['last_seen'] > CLIENT_IDLE_TIMEOUT:
                             print(f"Manager: Timeout detected for {info['username']} ({info['addr'][0]}).")
                             to_remove.append(sock)
 
@@ -190,6 +189,8 @@ class ConnectionManager:
 
     def stop(self):
         """Shuts down the connection manager and all associated threads/sockets."""
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            self.heartbeat_thread.join(timeout=2.0)
         self.running = False
         with self.control_clients_lock:
             for sock in list(self.control_clients.keys()):

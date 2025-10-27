@@ -33,8 +33,8 @@ from shared.helpers import unpack_file_metadata, pack_file_metadata
 class FileTransferServer(threading.Thread):
     """Main server component for handling file transfers."""
 
-    def __init__(self, manager):
-        super().__init__(daemon=True)
+    def _init_(self, manager):
+        super()._init_(daemon=True)
         self.manager = manager
         self.server_socket = None
         self.storage_dir = Path(STORAGE_DIR)
@@ -84,17 +84,15 @@ class FileTransferServer(threading.Thread):
 class FileHandler(threading.Thread):
     """Handles a single file transfer client connection."""
 
-    def __init__(self, manager, client_socket, address, storage_dir: Path):
-        super().__init__(daemon=True)
+    def _init_(self, manager, client_socket, address, storage_dir: Path):
+        super()._init_(daemon=True)
         self.manager = manager
         self.sock = client_socket
         self.address = address
         self.ip = address[0]
         self.port = address[1]
         self.storage_dir = storage_dir
-
-        # generous timeout for file transfers; keep it reasonable
-        self.sock.settimeout(max(10, SOCKET_TIMEOUT * 10))
+        self.sock.settimeout(60)  # Default timeout until metadata received
 
     def run(self):
         print(f"[FileHandler] Started for {self.ip}:{self.port}")
@@ -147,7 +145,10 @@ class FileHandler(threading.Thread):
             self._safe_send(pack_message(FILE_ACK_FAILURE, b"File too large"))
             return
 
-        # Prepare path and write chunks
+        # Adjust timeout dynamically based on file size
+        transfer_timeout = max(30, filesize / 1048576 * 2)
+        self.sock.settimeout(transfer_timeout)
+
         file_path = (self.storage_dir / filename).resolve()
 
         # Prevent directory traversal
@@ -266,5 +267,4 @@ class FileHandler(threading.Thread):
         try:
             self.sock.sendall(data_bytes)
         except Exception:
-            # ignore send problems (client may have disconnected)
             pass

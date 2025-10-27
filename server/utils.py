@@ -21,60 +21,9 @@ from shared.constants import (
     AUDIO_CHANNELS, BUFFER_SIZE # Added BUFFER_SIZE for read_tcp_message
 )
 from shared.protocol import MESSAGE_TYPES, CMD_USER_LIST, get_message_type_name
-
+from shared.helpers import pack_message,unpack_message
 
 # --- Protocol Serialization Helpers ---
-
-def pack_message(msg_type, payload=b""):
-    """Packs a message with the Sapora header (12 bytes)."""
-    if not isinstance(payload, bytes):
-        payload = str(payload).encode('utf-8')
-    
-    payload_length = len(payload)
-    
-    if payload_length > MAX_MESSAGE_SIZE:
-        if msg_type not in (0x40, 0x41):
-             raise ValueError(f"Payload size {payload_length} exceeds maximum {MAX_MESSAGE_SIZE}")
-
-    sequence_number = 0 
-    reserved = 0
-    
-    header = struct.pack(
-        '!BBIHH',
-        PROTOCOL_VERSION,    # 1 byte (B)
-        msg_type,            # 1 byte (B)
-        payload_length,      # 4 bytes (I)
-        sequence_number,     # 2 bytes (H)
-        reserved             # 2 bytes (H)
-    )
-    
-    return header + payload
-
-def unpack_message(data):
-    """Unpacks a message into header components and payload."""
-    if len(data) < HEADER_SIZE:
-        raise ValueError(f"Data too short: {len(data)} bytes (minimum {HEADER_SIZE})")
-    
-    header = data[:HEADER_SIZE]
-    payload = data[HEADER_SIZE:]
-    
-    try:
-        version, msg_type, payload_length, sequence_number, reserved = struct.unpack(
-            '!BBIHH',
-            header
-        )
-    except struct.error as e:
-        raise ValueError(f"Failed to unpack header: {e}")
-    
-    if len(payload) < payload_length:
-        raise ValueError(f"Incomplete payload: expected {payload_length}, got {len(payload)}")
-
-    payload = payload[:payload_length]
-
-    if version != PROTOCOL_VERSION:
-        raise ValueError(f"Protocol version mismatch: expected {PROTOCOL_VERSION}, got {version}")
-    
-    return version, msg_type, payload_length, sequence_number, payload
 
 def read_tcp_message(sock):
     """Reads a complete message packet from a TCP socket."""

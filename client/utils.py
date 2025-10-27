@@ -14,52 +14,9 @@ from shared.constants import (
     HEADER_SIZE, PROTOCOL_VERSION, AUDIO_CHUNK, AUDIO_FORMAT_PCM, 
     VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_QUALITY
 )
+from shared.helpers import pack_message, unpack_message
 
 # --- Protocol Serialization Helpers (Mirroring Server) ---
-
-def pack_message(msg_type, payload=b""):
-    """Packs a message with the Sapora header (12 bytes)."""
-    if not isinstance(payload, bytes):
-        payload = str(payload).encode('utf-8')
-    
-    payload_length = len(payload)
-    sequence_number = 0
-    reserved = 0
-    
-    header = struct.pack(
-        '!BBIHH',
-        PROTOCOL_VERSION,    # 1 byte (B)
-        msg_type,            # 1 byte (B)
-        payload_length,      # 4 bytes (I)
-        sequence_number,     # 2 bytes (H)
-        reserved             # 2 bytes (H)
-    )
-    
-    return header + payload
-
-def unpack_message(data):
-    """Unpacks a message into header components and payload."""
-    if len(data) < HEADER_SIZE:
-        raise ValueError(f"Data too short: {len(data)} bytes (minimum {HEADER_SIZE})")
-    
-    header = data[:HEADER_SIZE]
-    payload = data[HEADER_SIZE:]
-    
-    version, msg_type, payload_length, sequence_number, reserved = struct.unpack(
-        '!BBIHH',
-        header
-    )
-    
-    # Client should only attempt to unpack a full message, but handle slight over-read in TCP stream
-    if len(payload) < payload_length:
-        raise ValueError(f"Incomplete payload: expected {payload_length}, got {len(payload)}")
-
-    payload = payload[:payload_length]
-
-    if version != PROTOCOL_VERSION:
-        raise ValueError(f"Protocol version mismatch: expected {PROTOCOL_VERSION}, got {version}")
-    
-    return version, msg_type, payload_length, sequence_number, payload
 
 # --- Video Helpers ---
 
