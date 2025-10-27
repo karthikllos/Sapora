@@ -1,13 +1,19 @@
+#!/usr/bin/env python3
 """
-Standalone UDP Video Server Test
-Tests video broadcast functionality without full server infrastructure.
+optimized_server.py
+
+- Selector-based non-blocking UDP listener
+- Per-client outgoing queues with dedicated sender threads
+- Keeps newest packets when client queue is full (drop oldest)
 """
-import sys
 import os
+import sys
 import socket
+import selectors
+import threading
+import queue
 import time
 
-# Add project root to path
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -16,106 +22,126 @@ from shared.constants import VIDEO_PORT, UDP_STREAM_BUFFER, SOCKET_TIMEOUT
 from shared.protocol import STREAM_VIDEO, CMD_REGISTER
 from server.utils import unpack_message
 
-class SimpleVideoServer:
-    """Simplified video server for testing."""
-    
+class UltraLowLatencyServer:
     def __init__(self):
-        self.sock = None
-        self.running = True
-        self.clients = {}  # {ip: (ip, port)}
-        
-    def start(self):
-        """Start the UDP video server."""
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
-            self.sock.bind(('0.0.0.0', VIDEO_PORT))
-            self.sock.settimeout(SOCKET_TIMEOUT)
-            
-            print("=" * 70)
-            print("UDP VIDEO SERVER TEST - STARTED")
-            print("=" * 70)
-            print(f"Listening on UDP port {VIDEO_PORT}")
-            print(f"Waiting for video clients to connect...")
-            print("Press Ctrl+C to stop\n")
-            
-            frame_count = 0
-            last_report = time.time()
-            
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER * 4)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER * 4)
+        except Exception:
+            pass
+        self.sock.setblocking(False)
+        self.sock.bind(('0.0.0.0', VIDEO_PORT))
+
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self.sock, selectors.EVENT_READ)
+
+        # client -> queue
+        self.client_queues = {}
+        self.clients = set()
+        self.lock = threading.Lock()
+        self.running = True
+
+    def start(self):
+        print("=" * 60)
+        print(f"ULTRA LOW LATENCY SERVER LISTENING ON UDP {VIDEO_PORT}")
+        print("=" * 60)
+        try:
             while self.running:
-                try:
-                    data, sender_addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
-                    
-                    # Parse message
+                events = self.selector.select(timeout=0.01)
+                for key, mask in events:
                     try:
-                        version, msg_type, payload_length, seq_num, payload = unpack_message(data)
-                        
-                        if msg_type == CMD_REGISTER:
-                            # Client registering for video
-                            self.clients[sender_addr[0]] = sender_addr
-                            print(f"✓ Client registered: {sender_addr[0]}:{sender_addr[1]}")
-                            print(f"  Total clients: {len(self.clients)}")
-                            
-                        elif msg_type == STREAM_VIDEO:
-                            # Video frame received
-                            frame_count += 1
-                            
-                            # Register sender if not already registered
-                            if sender_addr[0] not in self.clients:
-                                self.clients[sender_addr[0]] = sender_addr
-                            
-                            # Broadcast to all other clients
-                            broadcast_count = 0
-                            dropped_count = 0
-                            for client_ip, client_addr in self.clients.items():
-                                if client_addr != sender_addr:
-                                    try:
-                                        self.sock.sendto(data, client_addr)
-                                        broadcast_count += 1
-                                    except (socket.timeout, BlockingIOError):
-                                        # Receiver buffer full or slow - drop packet (UDP tolerance)
-                                        dropped_count += 1
-                                    except Exception as e:
-                                        # Log unexpected errors only
-                                        print(f"✗ Broadcast error to {client_addr}: {type(e).__name__}: {e}")
-                            
-                            # Report stats every 2 seconds
-                            if time.time() - last_report >= 2.0:
-                                status = f"📹 Frames: {frame_count} | Clients: {len(self.clients)} | Last broadcast: {broadcast_count} recipients"
-                                if dropped_count > 0:
-                                    status += f" | Dropped: {dropped_count}"
-                                print(status)
-                                last_report = time.time()
-                                
-                    except ValueError as e:
-                        print(f"✗ Malformed packet from {sender_addr}: {e}")
-                        
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.running:
-                        print(f"✗ Error: {e}")
-                        
+                        data, addr = key.fileobj.recvfrom(UDP_STREAM_BUFFER)
+                    except BlockingIOError:
+                        continue
+                    except Exception:
+                        continue
+
+                    # unpack
+                    try:
+                        _, msg_type, _, _, payload = unpack_message(data)
+                    except Exception:
+                        continue
+
+                    if msg_type == CMD_REGISTER:
+                        self._register_client(addr)
+                    elif msg_type == STREAM_VIDEO:
+                        self._enqueue_broadcast(data, addr)
+
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
-        except Exception as e:
-            print(f"✗ Fatal error: {e}")
+            print("Server interrupted by user")
         finally:
             self.stop()
-            
-    def stop(self):
-        """Stop the server."""
-        self.running = False
-        if self.sock:
+
+    def _register_client(self, addr):
+        with self.lock:
+            if addr not in self.clients:
+                self.clients.add(addr)
+                q = queue.Queue(maxsize=8)
+                self.client_queues[addr] = q
+                t = threading.Thread(target=self._client_sender, args=(addr,), daemon=True)
+                t.start()
+                print(f"Client registered: {addr} (total {len(self.clients)})")
+
+    def _enqueue_broadcast(self, data, sender_addr):
+        with self.lock:
+            # broadcast to copies of clients set to avoid runtime change
+            for client in list(self.clients):
+                if client == sender_addr:
+                    continue
+                q = self.client_queues.get(client)
+                if q is None:
+                    continue
+                if q.full():
+                    try:
+                        _ = q.get_nowait()  # drop oldest
+                    except Exception:
+                        pass
+                try:
+                    q.put_nowait(data)
+                except Exception:
+                    pass
+
+    def _client_sender(self, addr):
+        q = self.client_queues.get(addr)
+        if q is None:
+            return
+        while self.running:
             try:
-                self.sock.close()
-            except:
-                pass
-        print("\n" + "=" * 70)
-        print("UDP VIDEO SERVER - STOPPED")
-        print("=" * 70)
+                data = q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                self.sock.sendto(data, addr)
+            except BlockingIOError:
+                # kernel full: small backoff
+                time.sleep(0.005)
+            except Exception as e:
+                # on unrecoverable error unregister client
+                print(f"Send error to {addr}: {e}")
+                with self.lock:
+                    try:
+                        self.clients.remove(addr)
+                        del self.client_queues[addr]
+                    except Exception:
+                        pass
+                return
+
+    def stop(self):
+        if not self.running:
+            return
+        print("\n[STOP] Server shutting down")
+        self.running = False
+        try:
+            self.selector.unregister(self.sock)
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+        print("Server stopped")
 
 if __name__ == '__main__':
-    server = SimpleVideoServer()
-    server.start()
+    s = UltraLowLatencyServer()
+    s.start()

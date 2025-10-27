@@ -1,173 +1,214 @@
+#!/usr/bin/env python3
 """
-Standalone UDP Video Sender Test
-Tests webcam capture and sending to UDP server.
+optimized_sender.py
+
+- Threaded capture -> encode -> send pipeline
+- Low JPEG quality (configurable)
+- Per-stage small queues with latest-frame-first eviction
+- Lightweight pacing with minimal drift
 """
-import sys
 import os
-import socket
+import sys
 import time
+import socket
+import threading
+import queue
 import cv2
 
-# Add project root to path
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from shared.constants import VIDEO_PORT, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS
+from shared.constants import VIDEO_PORT, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS, UDP_STREAM_BUFFER
 from shared.protocol import STREAM_VIDEO, CMD_REGISTER
-from client.utils import pack_message, encode_frame_to_jpeg
+from client.utils import pack_message
+# optional helper: if encode helper exists, prefer it
+try:
+    from client.utils import encode_frame_to_jpeg
+except Exception:
+    def encode_frame_to_jpeg(frame, quality=55):
+        # returns bytes
+        _, enc = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        return enc.tobytes()
 
-class VideoSender:
-    """Captures webcam and sends to UDP server."""
-    
-    def __init__(self, server_ip='127.0.0.1'):
+class VideoSenderOptimized:
+    def __init__(self, server_ip='127.0.0.1', target_fps=20, jpeg_quality=55):
         self.server_ip = server_ip
         self.server_port = VIDEO_PORT
-        self.sock = None
+
         self.cap = None
-        self.running = True
-        
+        self.sock = None
+
+        # small queues for fast drop-latest behavior
+        self.capture_queue = queue.Queue(maxsize=2)  # raw frames
+        self.encode_queue = queue.Queue(maxsize=3)   # jpeg bytes
+
+        self.running = False
+        self.target_fps = target_fps
+        self.jpeg_quality = jpeg_quality
+
+        # stats
+        self.frames_sent = 0
+
     def start(self):
-        """Start capturing and sending."""
+        print("=" * 60)
+        print("OPTIMIZED SENDER STARTING")
+        print("=" * 60)
+
+        # open camera
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            print("✗ ERROR: Cannot open webcam")
+            return
+
+        # set requested params (best-effort)
         try:
-            print("=" * 70)
-            print("UDP VIDEO SENDER TEST - STARTED")
-            print("=" * 70)
-            print(f"Target server: {self.server_ip}:{self.server_port}")
-            
-            # Initialize camera
-            print("\nInitializing webcam...")
-            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Windows optimized
-            if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(0)  # Fallback
-                if not self.cap.isOpened():
-                    print("✗ ERROR: Cannot open webcam!")
-                    print("  Make sure no other application is using the camera.")
-                    return
-            
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT)
             self.cap.set(cv2.CAP_PROP_FPS, VIDEO_FPS)
-            
-            actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            actual_fps = int(self.cap.get(cv2.CAP_PROP_FPS))
-            
-            print(f"✓ Webcam opened")
-            print(f"  Resolution: {actual_width}x{actual_height}")
-            print(f"  Target FPS: {VIDEO_FPS}")
-            
-            # Initialize socket
-            print("\nInitializing UDP socket...")
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            print(f"✓ UDP socket created")
-            
-            # Send registration
-            print(f"\nRegistering with server...")
-            reg_packet = pack_message(CMD_REGISTER, b"VIDEO")
-            for i in range(3):
+        except Exception:
+            pass
+
+        # socket
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER * 4)
+        except Exception:
+            pass
+
+        # register
+        reg_packet = pack_message(CMD_REGISTER, b"VIDEO")
+        for _ in range(3):
+            try:
                 self.sock.sendto(reg_packet, (self.server_ip, self.server_port))
-                time.sleep(0.1)
-            print(f"✓ Registration packets sent")
-            
-            print("\n" + "=" * 70)
-            print("STREAMING VIDEO")
-            print("=" * 70)
-            print("Press 'q' in the preview window or Ctrl+C to stop\n")
-            
-            frame_interval = 1.0 / VIDEO_FPS
-            frame_count = 0
-            start_time = time.time()
-            last_report = time.time()
-            
+            except Exception:
+                pass
+            time.sleep(0.02)
+
+        self.running = True
+
+        # threads
+        t_capture = threading.Thread(target=self._capture_loop, name='capture', daemon=True)
+        t_encode = threading.Thread(target=self._encode_loop, name='encode', daemon=True)
+        t_send = threading.Thread(target=self._send_loop, name='send', daemon=True)
+
+        t_capture.start()
+        t_encode.start()
+        t_send.start()
+
+        try:
             while self.running:
-                loop_start = time.time()
-                
-                # Capture frame
-                ret, frame = self.cap.read()
-                if not ret:
-                    print("✗ Failed to read frame from camera")
-                    time.sleep(0.1)
-                    continue
-                
-                # Encode to JPEG
-                try:
-                    jpeg_bytes = encode_frame_to_jpeg(frame)
-                    jpeg_size_kb = len(jpeg_bytes) / 1024
-                except Exception as e:
-                    print(f"✗ Encoding error: {e}")
-                    continue
-                
-                # Pack and send
-                packet = pack_message(STREAM_VIDEO, jpeg_bytes)
-                try:
-                    self.sock.sendto(packet, (self.server_ip, self.server_port))
-                    frame_count += 1
-                except Exception as e:
-                    print(f"✗ Send error: {e}")
-                
-                # Show local preview
-                cv2.imshow('Video Sender - Press Q to quit', frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    print("\nQuit key pressed")
-                    break
-                # Check if window was closed (X button)
-                if cv2.getWindowProperty('Video Sender - Press Q to quit', cv2.WND_PROP_VISIBLE) < 1:
-                    print("\nWindow closed")
-                    break
-                
-                # Report stats every 2 seconds
-                now = time.time()
-                if now - last_report >= 2.0:
-                    elapsed = now - start_time
-                    fps = frame_count / elapsed if elapsed > 0 else 0
-                    print(f"📹 Frames sent: {frame_count} | FPS: {fps:.1f} | Size: {jpeg_size_kb:.1f} KB")
-                    last_report = now
-                
-                # Control frame rate
-                elapsed = time.time() - loop_start
-                sleep_time = max(0, frame_interval - elapsed)
-                time.sleep(sleep_time)
-                
+                time.sleep(0.5)
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
-        except Exception as e:
-            print(f"\n✗ Fatal error: {e}")
-            import traceback
-            traceback.print_exc()
+            print("Interrupted by user")
         finally:
             self.stop()
-            
+
+    def _capture_loop(self):
+        print("[CAPTURE] capture thread started")
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+
+            # latest-first policy
+            try:
+                self.capture_queue.put_nowait(frame)
+            except queue.Full:
+                try:
+                    _ = self.capture_queue.get_nowait()  # drop oldest
+                except Exception:
+                    pass
+                try:
+                    self.capture_queue.put_nowait(frame)
+                except Exception:
+                    pass
+        print("[CAPTURE] capture thread ended")
+
+    def _encode_loop(self):
+        print("[ENCODE] encode thread started")
+        encode_param_quality = int(self.jpeg_quality)
+        while self.running:
+            try:
+                frame = self.capture_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            try:
+                jpeg_bytes = encode_frame_to_jpeg(frame, quality=encode_param_quality)
+            except Exception:
+                continue
+
+            try:
+                self.encode_queue.put_nowait(jpeg_bytes)
+            except queue.Full:
+                # drop oldest and insert new
+                try:
+                    _ = self.encode_queue.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    self.encode_queue.put_nowait(jpeg_bytes)
+                except Exception:
+                    pass
+        print("[ENCODE] encode thread ended")
+
+    def _send_loop(self):
+        print("[SEND] send thread started")
+        frame_interval = 1.0 / max(1, self.target_fps)
+        while self.running:
+            start = time.time()
+            try:
+                jpeg_bytes = self.encode_queue.get(timeout=0.1)
+            except queue.Empty:
+                time.sleep(0.001)
+                continue
+
+            packet = pack_message(STREAM_VIDEO, jpeg_bytes)
+            try:
+                self.sock.sendto(packet, (self.server_ip, self.server_port))
+                self.frames_sent += 1
+            except BlockingIOError:
+                # kernel buffer full: backoff briefly
+                time.sleep(0.005)
+            except Exception:
+                # ignore other send errors (UDP)
+                pass
+
+            elapsed = time.time() - start
+            to_sleep = frame_interval - elapsed
+            if to_sleep > 0:
+                time.sleep(min(to_sleep, 0.02))
+
+        print("[SEND] send thread ended")
+
     def stop(self):
-        """Cleanup resources."""
+        if not self.running:
+            return
+        print("\n[STOP] Shutting down sender")
         self.running = False
-        
-        if self.cap:
-            try:
+        try:
+            if self.cap:
                 self.cap.release()
-            except:
-                pass
-                
-        if self.sock:
-            try:
+        except Exception:
+            pass
+        try:
+            if self.sock:
                 self.sock.close()
-            except:
-                pass
-                
+        except Exception:
+            pass
         cv2.destroyAllWindows()
-        
-        print("\n" + "=" * 70)
-        print("UDP VIDEO SENDER - STOPPED")
-        print("=" * 70)
+        print(f"Frames sent: {self.frames_sent}")
+        print("Sender stopped")
 
 if __name__ == '__main__':
     import argparse
-    
-    parser = argparse.ArgumentParser(description='UDP Video Sender Test')
-    parser.add_argument('--server', type=str, default='127.0.0.1',
-                        help='Server IP address (default: 127.0.0.1)')
+    parser = argparse.ArgumentParser(description='Optimized UDP Video Sender')
+    parser.add_argument('--server', type=str, default='127.0.0.1', help='Server IP')
+    parser.add_argument('--fps', type=int, default=20, help='Target FPS')
+    parser.add_argument('--quality', type=int, default=55, help='JPEG quality (1-100)')
     args = parser.parse_args()
-    
-    sender = VideoSender(server_ip=args.server)
-    sender.start()
+
+    s = VideoSenderOptimized(server_ip=args.server, target_fps=args.fps, jpeg_quality=args.quality)
+    s.start()
