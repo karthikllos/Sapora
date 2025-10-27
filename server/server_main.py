@@ -1,134 +1,275 @@
 """
-Sapora LAN Collaboration Suite - Unified Server Main Entry Point
-Manages all services: Control, Chat, Video, Audio, File Transfer, Screen Sharing.
+Sapora LAN Collaboration Suite - Unified Server Orchestrator
+Starts and manages all server modules (audio, video, chat, file, screen share) in parallel.
+Includes WebSocket gateway for Electron frontend communication.
 """
+
 import sys
 import os
-import time
 import signal
 import threading
-from datetime import datetime
+import time
+import json
 
-# --- CRITICAL FIX: Add project root to path for shared/ imports ---
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-# -----------------------------------------------------------------
+# Add parent path for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import constants/protocol/services
-from shared.constants import (
-    CONTROL_PORT, CHAT_PORT, VIDEO_PORT, AUDIO_PORT, 
-    FILE_TRANSFER_PORT, SCREEN_SHARE_PORT
-)
 from server.connection_manager import ConnectionManager
-from server.tcp_handler import ControlServer 
-from server.udp_video_server import UDPVideoServer
+from server.tcp_handler import ControlServer
 from server.udp_audio_server import UDPAudioServer
+from server.udp_video_server import UDPVideoServer
 from server.file_server import FileTransferServer
 from server.screen_share_server import ScreenShareServer
 
-class UnifiedServer:
-    """Manages and runs all collaboration server services."""
+# Flask-SocketIO for WebSocket gateway to Electron
+try:
+    from flask import Flask
+    from flask_socketio import SocketIO, emit
+    from flask_cors import CORS
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    print("⚠️  Warning: flask-socketio not installed. WebSocket gateway disabled.")
+    print("   Install with: pip install flask flask-socketio flask-cors python-socketio")
+
+
+class SaporaServer:
+    """Main server orchestrator managing all services"""
     
-    def __init__(self):
+    def __init__(self, enable_websocket=True):
         self.manager = ConnectionManager()
-        self.services = []
+        self.services = {}
         self.running = False
         
+        # WebSocket gateway (optional)
+        self.websocket_enabled = enable_websocket and WEBSOCKET_AVAILABLE
+        self.flask_app = None
+        self.socketio = None
+        self.websocket_thread = None
+        
+        # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
-    def start_all(self):
-        """Starts all server services."""
-        print("\n" + "=" * 70)
-        print("🌐 SAPORA LAN COLLABORATION SERVER - STARTING ALL SERVICES")
-        print("=" * 70)
-        print(f"⏰ Server started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    def _signal_handler(self, signum, frame):
+        """Handle Ctrl+C and termination signals"""
+        print("\n🛑 Shutdown signal received...")
+        self.stop()
+        sys.exit(0)
+    
+    def start(self):
+        """Start all server services"""
+        print("="*60)
+        print("🚀 Starting Sapora Server - LAN Collaboration Suite")
+        print("="*60)
         
         self.running = True
         
-        service_configs = [
-            ('Control/Chat', ControlServer, CONTROL_PORT, True),
-            ('File Transfer', FileTransferServer, FILE_TRANSFER_PORT, True),
-            ('Screen Share', ScreenShareServer, SCREEN_SHARE_PORT, False),
-            ('UDP Video', UDPVideoServer, VIDEO_PORT, True),
-            ('UDP Audio', UDPAudioServer, AUDIO_PORT, True)
-        ]
+        # 1. Start TCP Control Server (Chat, Registration, Heartbeat)
+        print("\n📡 Starting TCP Control Server...")
+        control_server = ControlServer(self.manager)
+        control_server.start()
+        self.services['control'] = control_server
+        time.sleep(0.2)
         
-        for name, service_class, port, needs_manager in service_configs:
-            try:
-                # Some services need ConnectionManager, others don't
-                if needs_manager:
-                    service_instance = service_class(self.manager)
-                else:
-                    service_instance = service_class(port)
-                self.services.append(service_instance)
-                
-                service_instance.start()
-                print(f"✓ {name:20s} → Port {port:5d} [RUNNING]")
-                time.sleep(0.2)
-            except Exception as e:
-                print(f"✗ {name:20s} → Port {port:5d} [FAILED: {e}]")
+        # 2. Start UDP Audio Server
+        print("🎤 Starting UDP Audio Server...")
+        audio_server = UDPAudioServer(self.manager)
+        audio_server.start()
+        self.services['audio'] = audio_server
+        time.sleep(0.2)
         
-        print("\n" + "=" * 70)
-        print("🚀 ALL SERVICES ACTIVE")
-        print("=" * 70)
-        print(f"📊 Active clients: 0 | Monitoring connections...")
-        print("Press Ctrl+C to stop the server\n")
+        # 3. Start UDP Video Server
+        print("📹 Starting UDP Video Server...")
+        video_server = UDPVideoServer(self.manager)
+        video_server.start()
+        self.services['video'] = video_server
+        time.sleep(0.2)
         
+        # 4. Start File Transfer Server
+        print("📁 Starting File Transfer Server...")
+        file_server = FileTransferServer(self.manager)
+        file_server.start()
+        self.services['file'] = file_server
+        time.sleep(0.2)
+        
+        # 5. Start Screen Share Server
+        print("🖥️  Starting Screen Share Server...")
+        screen_server = ScreenShareServer()
+        screen_thread = threading.Thread(target=screen_server.start, daemon=True)
+        screen_thread.start()
+        self.services['screen'] = screen_server
+        time.sleep(0.2)
+        
+        # 6. Start WebSocket Gateway for Electron (if enabled)
+        if self.websocket_enabled:
+            print("🌐 Starting WebSocket Gateway for Electron...")
+            self._start_websocket_gateway()
+        
+        print("\n" + "="*60)
+        print("✅ All Sapora Server services started successfully!")
+        print("="*60)
+        print("\n📊 Service Status:")
+        print(f"   • TCP Control: Port 5000")
+        print(f"   • Chat: Port 5001")
+        print(f"   • File Transfer: Port 5002")
+        print(f"   • Screen Share: Port 5003")
+        print(f"   • UDP Video: Port 6000")
+        print(f"   • UDP Audio: Port 6001")
+        if self.websocket_enabled:
+            print(f"   • WebSocket Gateway: Port 5555")
+        print("\n💡 Press Ctrl+C to stop all services.\n")
+        
+        # Keep main thread alive
         try:
             while self.running:
-                time.sleep(5)
-                # Report connection status every 5 seconds
-                client_count = len(self.manager.control_clients)
-                if client_count > 0:
-                    print(f"📊 Active clients: {client_count}")
+                time.sleep(1)
+                self._monitor_services()
         except KeyboardInterrupt:
-            print("\nReceived keyboard interrupt.")
-        finally:
-            self.stop_all()
-
-    def stop_all(self):
-        """Stops all server services gracefully."""
+            self.stop()
+    
+    def _start_websocket_gateway(self):
+        """Start Flask-SocketIO WebSocket gateway for Electron communication"""
+        if not WEBSOCKET_AVAILABLE:
+            return
+        
+        self.flask_app = Flask(__name__)
+        self.flask_app.config['SECRET_KEY'] = 'sapora-secret-key'
+        CORS(self.flask_app)
+        
+        self.socketio = SocketIO(
+            self.flask_app,
+            cors_allowed_origins="*",
+            async_mode='threading',
+            logger=False,
+            engineio_logger=False
+        )
+        
+        # WebSocket event handlers
+        @self.socketio.on('connect')
+        def handle_connect():
+            print(f"🔌 Electron client connected via WebSocket")
+            emit('server_status', {'status': 'connected', 'services': list(self.services.keys())})
+        
+        @self.socketio.on('disconnect')
+        def handle_disconnect():
+            print(f"🔌 Electron client disconnected")
+        
+        @self.socketio.on('get_user_list')
+        def handle_get_user_list():
+            """Send current user list to Electron"""
+            user_list = self.manager.get_user_list()
+            emit('user_list_update', {'users': user_list})
+        
+        @self.socketio.on('get_stats')
+        def handle_get_stats():
+            """Send server statistics to Electron"""
+            stats = {
+                'control_clients': len(self.manager.control_clients),
+                'stream_clients': len(self.manager.stream_clients),
+                'screen_share': self.services.get('screen').get_stats() if 'screen' in self.services else {}
+            }
+            emit('stats_update', stats)
+        
+        @self.socketio.on('broadcast_event')
+        def handle_broadcast(data):
+            """Broadcast custom events to all Electron clients"""
+            event_type = data.get('type')
+            payload = data.get('payload', {})
+            self.socketio.emit(event_type, payload, broadcast=True)
+        
+        # Run Flask-SocketIO in separate thread
+        def run_socketio():
+            self.socketio.run(
+                self.flask_app,
+                host='0.0.0.0',
+                port=5555,
+                debug=False,
+                use_reloader=False,
+                log_output=False
+            )
+        
+        self.websocket_thread = threading.Thread(target=run_socketio, daemon=True)
+        self.websocket_thread.start()
+        time.sleep(0.5)
+    
+    def _monitor_services(self):
+        """Monitor service health (optional enhancement)"""
+        # Future: Add health checks, restart failed services, etc.
+        pass
+    
+    def stop(self):
+        """Stop all services gracefully"""
         if not self.running:
             return
         
-        print("\n\n" + "=" * 70)
-        print("🛑 SHUTTING DOWN ALL SERVICES")
-        print("=" * 70)
-        
+        print("\n🛑 Stopping Sapora Server...")
         self.running = False
-        self.manager.stop() 
         
-        for service in self.services:
-            name = service.__class__.__name__
+        # Stop connection manager (triggers all TCP handlers to exit)
+        print("   • Stopping Connection Manager...")
+        self.manager.stop()
+        
+        # Stop individual services
+        for name, service in self.services.items():
             try:
-                print(f"⏳ Stopping {name}...")
-                service.stop()
-                print(f"✓ {name} stopped")
+                print(f"   • Stopping {name.capitalize()} Server...")
+                if hasattr(service, 'stop'):
+                    service.stop()
+                elif hasattr(service, 'running'):
+                    service.running = False
             except Exception as e:
-                print(f"⚠️  Error stopping {name}: {e}")
+                print(f"   ⚠️  Error stopping {name}: {e}")
         
-        print("\n" + "=" * 70)
-        print("✓ SHUTDOWN COMPLETE")
-        print("=" * 70)
-        print(f"⏰ Server stopped at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        # Stop WebSocket gateway
+        if self.socketio:
+            print("   • Stopping WebSocket Gateway...")
+            try:
+                self.socketio.stop()
+            except:
+                pass
+        
+        print("\n✅ Sapora Server stopped cleanly.\n")
     
-    def _signal_handler(self, signum, frame):
-        """Handles shutdown signals."""
-        print(f"\n\n⚠️ Received signal {signum}")
-        self.stop_all()
-        os._exit(0) 
+    def get_status(self):
+        """Get current server status (for monitoring/debugging)"""
+        return {
+            'running': self.running,
+            'services': {
+                name: {
+                    'running': getattr(service, 'running', False) if hasattr(service, 'running') else True
+                }
+                for name, service in self.services.items()
+            },
+            'connections': {
+                'control_clients': len(self.manager.control_clients),
+                'stream_clients': len(self.manager.stream_clients)
+            }
+        }
+
 
 def main():
+    """Entry point for server"""
     import argparse
-    parser = argparse.ArgumentParser(description='Sapora LAN Collaboration Server')
-    parser.add_argument('--service', choices=['all'], default='all', help='Service to start (default: all)')
+    
+    parser = argparse.ArgumentParser(description='Sapora Server - LAN Collaboration Suite')
+    parser.add_argument(
+        '--no-websocket',
+        action='store_true',
+        help='Disable WebSocket gateway for Electron'
+    )
     args = parser.parse_args()
     
-    if args.service == 'all':
-        server = UnifiedServer()
-        server.start_all()
+    # Create and start server
+    server = SaporaServer(enable_websocket=not args.no_websocket)
+    
+    try:
+        server.start()
+    except Exception as e:
+        print(f"\n❌ Server error: {e}")
+        server.stop()
+        sys.exit(1)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
