@@ -1,6 +1,7 @@
 """
 Sapora LAN Collaboration Suite - Main PyQt6 GUI
 Modern Zoom-like interface integrating video, audio, chat, file transfer, and screen sharing.
+(Modified: thread-safe signals for cross-thread UI updates)
 """
 
 import sys
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QScrollArea, QFrame, QDialog,
     QDialogButtonBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QObject
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
 import cv2
 import numpy as np
@@ -34,22 +35,28 @@ from shared.constants import DEFAULT_SERVER_IP, VIDEO_PORT, CONTROL_PORT
 
 class VideoStreamThread(QThread):
     """Thread for handling video streaming operations"""
-    frame_received = pyqtSignal(str, np.ndarray)  # source_ip, frame
+    # Note: frames are emitted by the VideoClient's callback which now emits a signal.
     status_update = pyqtSignal(str)
     
     def __init__(self, video_client):
         super().__init__()
         self.video_client = video_client
-        self.running = False
+        self._running = False
     
     def run(self):
-        self.running = True
-        # Start receiving frames from other clients
-        self.video_client.start_receiving()
+        self._running = True
+        try:
+            # VideoClient.start_receiving should invoke the frame callback in its own thread
+            self.video_client.start_receiving()
+        except Exception as e:
+            self.status_update.emit(f"VideoThread error: {e}")
     
     def stop(self):
-        self.running = False
-        self.video_client.stop_streaming()
+        self._running = False
+        try:
+            self.video_client.stop_streaming()
+        except Exception:
+            pass
 
 
 class AudioStreamThread(QThread):
@@ -59,16 +66,22 @@ class AudioStreamThread(QThread):
     def __init__(self, audio_client):
         super().__init__()
         self.audio_client = audio_client
-        self.running = False
+        self._running = False
     
     def run(self):
-        self.running = True
-        # Audio client runs its own threads internally
-        self.audio_client.start_receiving()
+        self._running = True
+        try:
+            # AudioClient manages its own send/receive threads; call start_receiving to begin playback thread
+            self.audio_client.start_receiving()
+        except Exception as e:
+            self.status_update.emit(f"AudioThread error: {e}")
     
     def stop(self):
-        self.running = False
-        self.audio_client.stop_streaming()
+        self._running = False
+        try:
+            self.audio_client.stop_streaming()
+        except Exception:
+            pass
 
 
 class FileTransferThread(QThread):
@@ -84,12 +97,18 @@ class FileTransferThread(QThread):
         self.save_path = save_path
     
     def run(self):
-        if self.operation == "upload":
-            success = self.file_client.upload_file(self.file_path)
-            self.transfer_complete.emit(success)
-        elif self.operation == "download":
-            success = self.file_client.download_file(self.file_path, self.save_path)
-            self.transfer_complete.emit(success)
+        try:
+            if self.operation == "upload":
+                success = self.file_client.upload_file(self.file_path)
+                self.transfer_complete.emit(bool(success))
+            elif self.operation == "download":
+                success = self.file_client.download_file(self.file_path, self.save_path)
+                self.transfer_complete.emit(bool(success))
+            else:
+                self.transfer_complete.emit(False)
+        except Exception as e:
+            self.status_update.emit(f"File thread error: {e}")
+            self.transfer_complete.emit(False)
 
 
 # ============================================================================
@@ -149,6 +168,13 @@ class LoginDialog(QDialog):
 class SaporaMainWindow(QMainWindow):
     """Main application window with Zoom-like interface"""
     
+    # Thread-safe signals for updating UI from other threads
+    chat_message_signal = pyqtSignal(str, str)   # sender, message
+    user_list_signal = pyqtSignal(object)        # list of users
+    frame_signal = pyqtSignal(object)            # (source_ip, frame) or frame
+    file_status_signal = pyqtSignal(str)         # file status messages
+    status_signal = pyqtSignal(str)              # generic status updates
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Sapora - Video Conference")
@@ -168,6 +194,7 @@ class SaporaMainWindow(QMainWindow):
         # Worker threads
         self.video_thread = None
         self.audio_thread = None
+        self.file_thread = None
         
         # UI state
         self.video_enabled = False
@@ -176,7 +203,13 @@ class SaporaMainWindow(QMainWindow):
         
         # Frame storage for display
         self.current_frame = None
-        self.local_frame = None
+        
+        # Connect signals to slots (must be done before clients may emit)
+        self.chat_message_signal.connect(self._on_chat_message_signal)
+        self.user_list_signal.connect(self._on_user_list_signal)
+        self.frame_signal.connect(self._on_frame_signal)
+        self.file_status_signal.connect(self._on_file_status_signal)
+        self.status_signal.connect(self._on_status_signal)
         
         # Show login dialog first
         self.show_login()
@@ -199,43 +232,71 @@ class SaporaMainWindow(QMainWindow):
             self.close()
     
     def initialize_clients(self):
-        """Initialize all client modules"""
-        # Video Client
+        """Initialize all client modules and pass thread-safe callbacks"""
+        # Video Client: pass a frame callback that emits a signal
+        # We don't assume exact signature, so wrap in a safe function:
+        def video_frame_callback(*args):
+            """
+            Accepts either (frame,) or (source_ip, frame). Normalize and emit via frame_signal.
+            """
+            try:
+                if len(args) == 1:
+                    self.frame_signal.emit(args[0])
+                elif len(args) >= 2:
+                    # (source_ip, frame)
+                    self.frame_signal.emit((args[0], args[1]))
+                else:
+                    # unknown form
+                    pass
+            except Exception:
+                pass
+        
         self.video_client = VideoClient(
             server_ip=self.server_ip,
             server_port=VIDEO_PORT,
             username=self.username,
-            frame_callback=self.on_frame_received
+            frame_callback=video_frame_callback
         )
         
-        # Audio Client
+        # Audio Client: file/audio status callbacks will emit signals
         self.audio_client = AudioClient(
             server_ip=self.server_ip,
             username=self.username
         )
         
-        # Chat Client
+        # Chat Client: give callbacks that emit signals (thread-safe)
         self.chat_client = ChatClient(
             server_ip=self.server_ip,
             server_port=CONTROL_PORT,
             username=self.username
         )
+        # chat_client will call these callbacks from its network thread; signals queue to GUI thread
         self.chat_client.set_callbacks(
-            user_list_cb=self.on_user_list_update,
-            message_cb=self.on_chat_message
+            user_list_cb=self.user_list_signal.emit,
+            message_cb=self.chat_message_signal.emit
         )
         
-        # File Transfer Client
+        # File Transfer Client: use file_status_signal for status updates
         self.file_client = FileTransferClient(
             server_ip=self.server_ip,
-            status_callback=self.on_file_status
+            status_callback=self.file_status_signal.emit
         )
         
         # Screen Share Client
-        self.screen_client = ScreenShareClient(
-            server_ip=self.server_ip,
-            mode="presenter"
-        )
+        # Provide a status callback via status_signal
+        try:
+            self.screen_client = ScreenShareClient(
+                server_ip=self.server_ip,
+                mode="presenter",
+                status_callback=self.status_signal.emit
+            )
+        except TypeError:
+            # If ScreenShareClient doesn't accept status_callback, instantiate without it,
+            # but we'll still call start in a thread and catch exceptions.
+            self.screen_client = ScreenShareClient(
+                server_ip=self.server_ip,
+                mode="presenter"
+            )
     
     def setup_ui(self):
         """Build the main interface"""
@@ -280,7 +341,7 @@ class SaporaMainWindow(QMainWindow):
         """Load style.qss if available"""
         qss_path = Path(__file__).parent / "style.qss"
         if qss_path.exists():
-            with open(qss_path, 'r') as f:
+            with open(qss_path, 'r', encoding='utf-8') as f:
                 self.setStyleSheet(f.read())
     
     def create_top_bar(self):
@@ -465,14 +526,17 @@ class SaporaMainWindow(QMainWindow):
                 
                 # Start receiver thread
                 self.video_thread = VideoStreamThread(self.video_client)
-                self.video_thread.frame_received.connect(self.on_frame_received)
+                self.video_thread.status_update.connect(self.show_notification)
                 self.video_thread.start()
         else:
             # Stop video
-            self.video_client.stop_streaming()
+            try:
+                self.video_client.stop_streaming()
+            except Exception:
+                pass
             if self.video_thread:
                 self.video_thread.stop()
-                self.video_thread.wait()
+                self.video_thread.wait(2000)
             
             self.video_enabled = False
             self.video_btn.setText("🎥 Start Video")
@@ -480,41 +544,63 @@ class SaporaMainWindow(QMainWindow):
             self.video_label.setText("📹\n\nVideo Stopped")
     
     def on_video_status(self, message):
-        """Callback for video status updates"""
-        self.show_notification(message)
+        """Callback for video status updates (passed to video_client.start_streaming)"""
+        # The video client will call this from its thread; route via signal to ensure UI-safe actions
+        self.status_signal.emit(message)
     
-    def on_frame_received(self, source_ip, frame):
-        """Callback when a video frame is received"""
-        self.current_frame = frame
+    def _on_frame_signal(self, payload):
+        """Slot invoked in GUI thread when a frame arrives via signal"""
+        # payload could be either: frame OR (source_ip, frame)
+        try:
+            if isinstance(payload, tuple) and len(payload) >= 2:
+                _, frame = payload[0], payload[1]
+            else:
+                frame = payload
+            if isinstance(frame, np.ndarray):
+                self.current_frame = frame
+        except Exception:
+            pass
     
     def update_video_display(self):
         """Update the video label with the latest frame"""
         # Show local camera feed if available
-        if self.video_enabled and self.video_client.last_frame is not None:
-            frame = self.video_client.last_frame
+        frame = None
+        if self.video_enabled:
+            # video_client may store last_frame attribute
+            try:
+                if hasattr(self.video_client, "last_frame") and self.video_client.last_frame is not None:
+                    frame = self.video_client.last_frame
+            except Exception:
+                pass
+        
         # Otherwise show received frame
-        elif self.current_frame is not None:
+        if frame is None and self.current_frame is not None:
             frame = self.current_frame
-        else:
+        
+        if frame is None:
             return
         
-        # Convert BGR to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        bytes_per_line = ch * w
-        
-        # Create QImage and scale to fit
-        qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(qt_image)
-        
-        # Scale to fit label while maintaining aspect ratio
-        scaled_pixmap = pixmap.scaled(
-            self.video_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        self.video_label.setPixmap(scaled_pixmap)
+        try:
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            
+            # Create QImage and scale to fit
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_image)
+            
+            # Scale to fit label while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                self.video_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            self.video_label.setPixmap(scaled_pixmap)
+        except Exception:
+            # If conversion fails, ignore (frame format might be unexpected)
+            pass
     
     # ========================================================================
     # AUDIO HANDLING
@@ -532,13 +618,17 @@ class SaporaMainWindow(QMainWindow):
                 
                 # Start receiver thread
                 self.audio_thread = AudioStreamThread(self.audio_client)
+                self.audio_thread.status_update.connect(self.show_notification)
                 self.audio_thread.start()
         else:
             # Stop audio
-            self.audio_client.stop_streaming()
+            try:
+                self.audio_client.stop_streaming()
+            except Exception:
+                pass
             if self.audio_thread:
                 self.audio_thread.stop()
-                self.audio_thread.wait()
+                self.audio_thread.wait(2000)
             
             self.audio_enabled = False
             self.audio_btn.setText("🎙 Start Audio")
@@ -546,7 +636,7 @@ class SaporaMainWindow(QMainWindow):
     
     def on_audio_status(self, message):
         """Callback for audio status updates"""
-        self.show_notification(message)
+        self.status_signal.emit(message)
     
     # ========================================================================
     # CHAT HANDLING
@@ -561,18 +651,35 @@ class SaporaMainWindow(QMainWindow):
         """Send a chat message"""
         text = self.chat_input.text().strip()
         if text:
-            self.chat_client.send_message(text)
+            try:
+                self.chat_client.send_message(text)
+            except Exception as e:
+                self.show_notification(f"Chat send failed: {e}")
             self.chat_input.clear()
     
+    # ---- Signal slots (these run in GUI thread) ----
+    def _on_chat_message_signal(self, sender, message):
+        """Thread-safe slot for appending chat messages to UI"""
+        try:
+            formatted = f"<b>{sender}:</b> {message}"
+            self.chat_display.append(formatted)
+        except Exception:
+            pass
+    
+    def _on_user_list_signal(self, users):
+        """Thread-safe slot for updating participants list"""
+        try:
+            user_text = "\n".join(f"• {user}" for user in users)
+            self.participants_display.setText(user_text)
+        except Exception:
+            pass
+    
+    # Legacy - kept for API compatibility (used by earlier code)
     def on_chat_message(self, sender, message):
-        """Callback when a chat message is received"""
-        formatted = f"<b>{sender}:</b> {message}"
-        self.chat_display.append(formatted)
+        self._on_chat_message_signal(sender, message)
     
     def on_user_list_update(self, users):
-        """Callback when the user list is updated"""
-        user_text = "\n".join(f"• {user}" for user in users)
-        self.participants_display.setText(user_text)
+        self._on_user_list_signal(users)
     
     # ========================================================================
     # FILE TRANSFER HANDLING
@@ -591,15 +698,17 @@ class SaporaMainWindow(QMainWindow):
             self.upload_file(file_path)
     
     def upload_file(self, file_path):
-        """Upload a file to the server"""
+        """Upload a file to the server (threaded)"""
+        # Ensure any previous thread cleaned up
+        if self.file_thread and self.file_thread.isRunning():
+            self.show_notification("File transfer already in progress.")
+            return
+        
         self.file_thread = FileTransferThread(self.file_client, "upload", file_path)
-        self.file_thread.status_update.connect(self.on_file_status)
+        self.file_thread.status_update.connect(self.file_status_signal.emit)
         self.file_thread.transfer_complete.connect(self.on_file_transfer_complete)
         self.file_thread.start()
-    
-    def on_file_status(self, message):
-        """Callback for file transfer status updates"""
-        self.show_notification(message)
+        self.show_notification(f"📤 Uploading {Path(file_path).name}...")
     
     def on_file_transfer_complete(self, success):
         """Callback when file transfer completes"""
@@ -607,6 +716,10 @@ class SaporaMainWindow(QMainWindow):
             self.show_notification("✅ File transfer successful!")
         else:
             self.show_notification("❌ File transfer failed")
+    
+    def _on_file_status_signal(self, message):
+        """Update UI from file client status callbacks"""
+        self.show_notification(message)
     
     # ========================================================================
     # SCREEN SHARE HANDLING
@@ -622,9 +735,18 @@ class SaporaMainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            # Screen sharing runs in its own thread internally
+            # Start screen sharing in a separate thread to prevent blocking
+            def _start_sharing():
+                try:
+                    # ScreenShareClient may raise if pyscreeze/pillow missing; catch and emit
+                    self.screen_client.start()
+                except Exception as e:
+                    self.status_signal.emit(f"Screen share error: {e}")
+            
+            t = QThread()
+            # Run the blocking start in a Python thread (not a QThread) because ScreenShareClient likely uses blocking sockets/loops
             import threading
-            threading.Thread(target=self.screen_client.start, daemon=True).start()
+            threading.Thread(target=_start_sharing, daemon=True).start()
             self.show_notification("🖥 Screen sharing started")
     
     # ========================================================================
@@ -633,12 +755,18 @@ class SaporaMainWindow(QMainWindow):
     
     def show_notification(self, message):
         """Display a notification message"""
-        # For now, print to console. Could be enhanced with toast notifications
+        # Route through the status_signal to centralize notifications
         print(f"[NOTIFICATION] {message}")
-        # Update status bar temporarily
-        current_text = self.status_label.text()
-        self.status_label.setText(message)
-        QTimer.singleShot(3000, lambda: self.status_label.setText(current_text))
+        try:
+            current_text = self.status_label.text()
+            self.status_label.setText(str(message))
+            QTimer.singleShot(3000, lambda: self.status_label.setText(current_text))
+        except Exception:
+            pass
+    
+    def _on_status_signal(self, text):
+        """Slot for handling status_signal emissions (GUI thread)"""
+        self.show_notification(text)
     
     def leave_meeting(self):
         """Leave the meeting and clean up"""
@@ -657,21 +785,36 @@ class SaporaMainWindow(QMainWindow):
         """Clean up all resources before closing"""
         # Stop video
         if self.video_enabled:
-            self.video_client.stop_streaming()
+            try:
+                self.video_client.stop_streaming()
+            except Exception:
+                pass
             if self.video_thread:
-                self.video_thread.stop()
-                self.video_thread.wait()
+                try:
+                    self.video_thread.stop()
+                    self.video_thread.wait(2000)
+                except Exception:
+                    pass
         
         # Stop audio
         if self.audio_enabled:
-            self.audio_client.stop_streaming()
+            try:
+                self.audio_client.stop_streaming()
+            except Exception:
+                pass
             if self.audio_thread:
-                self.audio_thread.stop()
-                self.audio_thread.wait()
+                try:
+                    self.audio_thread.stop()
+                    self.audio_thread.wait(2000)
+                except Exception:
+                    pass
         
         # Disconnect chat
         if self.chat_client:
-            self.chat_client.disconnect()
+            try:
+                self.chat_client.disconnect()
+            except Exception:
+                pass
     
     def closeEvent(self, event):
         """Handle window close event"""
