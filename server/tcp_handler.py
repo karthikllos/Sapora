@@ -1,138 +1,123 @@
 """
-Sapora LAN Collaboration Suite - Base TCP Handler
-Handles all TCP control messages (Register, Heartbeat, Chat, Disconnect).
+Sapora LAN Collaboration Suite - Control Server (Optimized)
+Handles TCP control, registration, heartbeats, chat, and disconnects.
 """
+
 import threading
 import socket
 import json
-import time
-
-# Import constants/protocol/utils
 import sys
 import os
+
+# Add parent path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from shared.constants import BUFFER_SIZE, SOCKET_TIMEOUT,CONTROL_PORT
+from shared.constants import CONTROL_PORT, SOCKET_TIMEOUT
 from shared.protocol import CMD_REGISTER, CMD_HEARTBEAT, CMD_DISCONNECT, MSG_CHAT
 from server.utils import read_tcp_message, unpack_message, pack_message, get_message_type_name
 
+
 class TCPHandler(threading.Thread):
-    """Handles a single TCP client connection for control and chat."""
-    
+    """Handles one TCP client connection."""
+
     def __init__(self, manager, client_socket, address):
         super().__init__(daemon=True)
         self.manager = manager
         self.sock = client_socket
         self.address = address
-        self.ip = address[0]
-        self.port = address[1]
+        self.ip, self.port = address
         self.username = "Unknown"
         self.running = True
-        
+
         self.sock.settimeout(SOCKET_TIMEOUT)
         self.manager.add_client(self.sock, self.address)
-        
+
     def run(self):
-        """Main loop to receive and process messages."""
-        print(f"TCPHandler: Started for {self.ip}:{self.port}")
+        print(f"[TCPHandler] Started for {self.ip}:{self.port}")
 
         try:
             while self.manager.running and self.running:
-                raw_message = read_tcp_message(self.sock)
-                
-                if raw_message is None:
-                    # Connection closed or error reading header/payload
+                raw = read_tcp_message(self.sock)
+                if not raw:
                     break
-                
-                try:
-                    version, msg_type, payload_length, seq_num, payload = unpack_message(raw_message)
-                    
-                    self.manager.update_client_status(self.sock)
-                    
-                    if msg_type == CMD_REGISTER:
-                        self._handle_register(payload)
-                    elif msg_type == MSG_CHAT:
-                        self._handle_chat(payload)
-                    elif msg_type == CMD_DISCONNECT:
-                        self.running = False
-                        print(f"TCPHandler: Received DISCONNECT from {self.username}.")
-                        break
-                    elif msg_type == CMD_HEARTBEAT:
-                        # Heartbeat received, manager updated last_seen, nothing more to do
-                        pass
-                    else:
-                        print(f"TCPHandler: Unknown message type {get_message_type_name(msg_type)} from {self.username}")
-                        
-                except ValueError as e:
-                    # Protocol error (e.g., malformed packet)
-                    print(f"TCPHandler: Protocol error from {self.ip}: {e}")
+
+                version, msg_type, _, _, payload = unpack_message(raw)
+                self.manager.update_client_status(self.sock)
+
+                if msg_type == CMD_REGISTER:
+                    self._handle_register(payload)
+                elif msg_type == MSG_CHAT:
+                    self._handle_chat(payload)
+                elif msg_type == CMD_HEARTBEAT:
+                    continue  # heartbeat, ignore
+                elif msg_type == CMD_DISCONNECT:
+                    print(f"[TCPHandler] {self.username} requested disconnect.")
                     break
-                except Exception as e:
-                    # General error
-                    print(f"TCPHandler: Error processing message from {self.username}: {e}")
-                    break
-                    
+                else:
+                    print(f"[TCPHandler] Unknown message type: {get_message_type_name(msg_type)}")
+
         except socket.timeout:
-             # Regular timeout, continue loop
-             pass
+            pass
+        except ConnectionResetError:
+            print(f"[TCPHandler] Client {self.username} disconnected abruptly.")
         except Exception as e:
-            if self.running:
-                print(f"TCPHandler: Connection error for {self.username} ({self.ip}): {e}")
+            print(f"[TCPHandler] Error from {self.username}: {e}")
         finally:
             self._cleanup()
 
     def _handle_register(self, payload):
-        """Processes the initial registration payload."""
+        """Registers client username."""
         try:
             data = json.loads(payload.decode('utf-8'))
-            new_username = data.get('username', f"User-{self.port}")
-            self.username = new_username
-            self.manager.update_client_status(self.sock, username=new_username)
-            print(f"TCPHandler: Registered {new_username} from {self.ip}")
+            self.username = data.get('username', f"User-{self.port}")
+            self.manager.update_client_status(self.sock, username=self.username)
+            print(f"[TCPHandler] Registered: {self.username} ({self.ip})")
         except Exception as e:
-            print(f"TCPHandler: Failed to process registration payload: {e}")
+            print(f"[TCPHandler] Registration Error: {e}")
 
     def _handle_chat(self, payload):
-        """Broadcasts a received chat message to all other connected control clients."""
+        """Broadcasts chat message to all clients."""
         try:
-            message_text = payload.decode('utf-8')
-            # Assuming message already contains username prefix (e.g., "User: Hello")
-            print(f"Chat: [{self.username}] {message_text}")
-            
+            msg = payload.decode('utf-8', errors='ignore')
+            print(f"[Chat] {self.username}: {msg}")
             chat_packet = pack_message(MSG_CHAT, payload)
-            
-            # Broadcast to all other control clients
+
             disconnected = []
             with self.manager.control_clients_lock:
-                for client_sock, info in self.manager.control_clients.items():
-                    if client_sock != self.sock: # Don't echo back to sender
+                for client_sock in list(self.manager.control_clients.keys()):
+                    if client_sock != self.sock:
                         try:
                             client_sock.sendall(chat_packet)
                         except Exception:
                             disconnected.append(client_sock)
-            
-            # Clean up disconnected clients
+
+            # Cleanup disconnected clients
             for sock in disconnected:
                 self.manager.remove_client(sock)
-                
+
         except Exception as e:
-            print(f"TCPHandler: Error handling chat message: {e}")
+            print(f"[TCPHandler] Chat Broadcast Error: {e}")
 
     def _cleanup(self):
-        """Removes client from manager on disconnect."""
-        if self.running:
-            self.running = False
-            self.manager.remove_client(self.sock)
-            print(f"TCPHandler: Cleaned up client {self.username}.")
+        """Removes client from manager and closes socket."""
+        if not self.running:
+            return
+        self.running = False
+        self.manager.remove_client(self.sock)
+        try:
+            self.sock.close()
+        except:
+            pass
+        print(f"[TCPHandler] Disconnected {self.username}.")
 
 
 class ControlServer(threading.Thread):
-    """Main Control/Chat Server using TCP."""
-    
+    """Main TCP Control Server."""
+
     def __init__(self, manager):
         super().__init__(daemon=True)
         self.manager = manager
         self.server_socket = None
-        
+
     def run(self):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -140,31 +125,30 @@ class ControlServer(threading.Thread):
             self.server_socket.bind(('0.0.0.0', CONTROL_PORT))
             self.server_socket.listen(10)
             self.server_socket.settimeout(SOCKET_TIMEOUT)
-            
-            print(f"ControlServer: Listening on TCP port {CONTROL_PORT}")
-            
+
+            print(f"[ControlServer] Listening on TCP port {CONTROL_PORT}")
+
             while self.manager.running:
                 try:
                     client_socket, address = self.server_socket.accept()
-                    # Hand off client connection to a new TCPHandler thread
                     handler = TCPHandler(self.manager, client_socket, address)
                     handler.start()
-                    
                 except socket.timeout:
                     continue
                 except Exception as e:
                     if self.manager.running:
-                        print(f"ControlServer: Error accepting connection: {e}")
-                        
+                        print(f"[ControlServer] Accept Error: {e}")
+
         except Exception as e:
-            print(f"ControlServer: Fatal error: {e}")
+            print(f"[ControlServer] Fatal Error: {e}")
         finally:
             self.stop()
-            
+
     def stop(self):
-        if self.server_socket:
-            try:
+        """Stops the control server."""
+        try:
+            if self.server_socket:
                 self.server_socket.close()
-            except:
-                pass
-        print("ControlServer: Server stopped.")
+        except:
+            pass
+        print("[ControlServer] Stopped cleanly.")
