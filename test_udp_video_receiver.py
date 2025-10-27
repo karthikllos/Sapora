@@ -37,8 +37,9 @@ class VideoReceiver:
             # Initialize socket
             print("\nInitializing UDP socket...")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
-            self.sock.settimeout(CONNECTION_TIMEOUT)
+            # Increase buffer size to prevent packet loss
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER * 4)
+            self.sock.settimeout(1.0)  # Shorter timeout for more responsive frame display
             
             # Bind to any available port
             self.sock.bind(('', 0))
@@ -61,9 +62,12 @@ class VideoReceiver:
             print("Press 'q' in the video window or Ctrl+C to stop\n")
             
             frame_count = 0
+            display_count = 0
             start_time = time.time()
             last_report = time.time()
             last_frame_time = time.time()
+            display_interval = 1.0 / 30  # Display at 30 FPS max
+            last_display_time = time.time()
             
             while self.running:
                 try:
@@ -78,13 +82,30 @@ class VideoReceiver:
                             frame_count += 1
                             last_frame_time = time.time()
                             
+                            # Throttle display updates to prevent overwhelming CV2
+                            now = time.time()
+                            if now - last_display_time < display_interval:
+                                continue  # Skip displaying this frame
+                            
                             # Decode JPEG to frame
                             frame = decode_jpeg_to_frame(payload)
                             if frame is not None:
                                 # Display frame
                                 cv2.imshow('Video Receiver - Press Q to quit', frame)
-                                if cv2.waitKey(1) & 0xFF == ord('q'):
+                                display_count += 1
+                                last_display_time = now
+                                
+                                key = cv2.waitKey(1) & 0xFF
+                                if key == ord('q'):
                                     print("\nQuit key pressed")
+                                    break
+                                # Check if window was closed (X button)
+                                try:
+                                    if cv2.getWindowProperty('Video Receiver - Press Q to quit', cv2.WND_PROP_VISIBLE) < 1:
+                                        print("\nWindow closed")
+                                        break
+                                except:
+                                    print("\nWindow closed")
                                     break
                             else:
                                 print("✗ Failed to decode frame")
@@ -103,8 +124,9 @@ class VideoReceiver:
                 now = time.time()
                 if now - last_report >= 2.0:
                     elapsed = now - start_time
-                    fps = frame_count / elapsed if elapsed > 0 else 0
-                    print(f"📹 Frames received: {frame_count} | FPS: {fps:.1f} | From: {sender_addr[0]}")
+                    recv_fps = frame_count / elapsed if elapsed > 0 else 0
+                    display_fps = display_count / elapsed if elapsed > 0 else 0
+                    print(f"📹 Received: {frame_count} ({recv_fps:.1f} FPS) | Displayed: {display_count} ({display_fps:.1f} FPS) | From: {sender_addr[0]}")
                     last_report = now
                     
         except KeyboardInterrupt:

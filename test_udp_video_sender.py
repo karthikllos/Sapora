@@ -108,8 +108,13 @@ class VideoSender:
                 
                 # Show local preview
                 cv2.imshow('Video Sender - Press Q to quit', frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     print("\nQuit key pressed")
+                    break
+                # Check if window was closed (X button)
+                if cv2.getWindowProperty('Video Sender - Press Q to quit', cv2.WND_PROP_VISIBLE) < 1:
+                    print("\nWindow closed")
                     break
                 
                 # Report stats every 2 seconds

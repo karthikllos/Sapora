@@ -67,17 +67,25 @@ class SimpleVideoServer:
                             
                             # Broadcast to all other clients
                             broadcast_count = 0
+                            dropped_count = 0
                             for client_ip, client_addr in self.clients.items():
                                 if client_addr != sender_addr:
                                     try:
                                         self.sock.sendto(data, client_addr)
                                         broadcast_count += 1
+                                    except (socket.timeout, BlockingIOError):
+                                        # Receiver buffer full or slow - drop packet (UDP tolerance)
+                                        dropped_count += 1
                                     except Exception as e:
-                                        print(f"✗ Broadcast error to {client_addr}: {e}")
+                                        # Log unexpected errors only
+                                        print(f"✗ Broadcast error to {client_addr}: {type(e).__name__}: {e}")
                             
                             # Report stats every 2 seconds
                             if time.time() - last_report >= 2.0:
-                                print(f"📹 Frames: {frame_count} | Clients: {len(self.clients)} | Last broadcast: {broadcast_count} recipients")
+                                status = f"📹 Frames: {frame_count} | Clients: {len(self.clients)} | Last broadcast: {broadcast_count} recipients"
+                                if dropped_count > 0:
+                                    status += f" | Dropped: {dropped_count}"
+                                print(status)
                                 last_report = time.time()
                                 
                     except ValueError as e:
