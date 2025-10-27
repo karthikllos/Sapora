@@ -1,5 +1,5 @@
 """
-Sapora LAN Collaboration Suite - Connection Manager
+Sapora LAN Collaboration Suite - Connection Manager (FIXED)
 Maintains state for all connected clients (TCP and UDP) and manages synchronization.
 """
 import threading
@@ -181,10 +181,10 @@ class ConnectionManager:
 
                     except Exception:
                         to_remove.append(sock)
-                
-                # Remove stale connections
-                for sock in to_remove:
-                    self.remove_client(sock)
+            
+            # Remove stale connections OUTSIDE the lock to avoid deadlock
+            for sock in to_remove:
+                self.remove_client(sock)
         
         print("Manager: Heartbeat thread stopped.")
 
