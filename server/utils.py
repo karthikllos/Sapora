@@ -44,7 +44,7 @@ def pack_message(msg_type, payload=b""):
         PROTOCOL_VERSION,    # 1 byte (B)
         msg_type,            # 1 byte (B)
         payload_length,      # 4 bytes (I)
-        sequence_number,     # 4 bytes (I)
+        sequence_number,     # 2 bytes (H)
         reserved             # 2 bytes (H)
     )
     

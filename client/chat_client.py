@@ -37,21 +37,35 @@ class ChatClient:
     def connect(self):
         """Establishes TCP connection and registers with the server."""
         try:
+            print(f"[DEBUG ChatClient] Creating socket...")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            print(f"[DEBUG ChatClient] Setting timeout to {CONNECTION_TIMEOUT}...")
             self.sock.settimeout(CONNECTION_TIMEOUT)
+            print(f"[DEBUG ChatClient] Attempting to connect to {self.server_ip}:{self.server_port}...")
             self.sock.connect((self.server_ip, self.server_port))
+            print(f"[DEBUG ChatClient] TCP connection established!")
             
             # 1. Send initial registration payload (JSON)
+            print(f"[DEBUG ChatClient] Preparing registration packet for username: {self.username}")
             reg_payload = json.dumps({'username': self.username})
+            print(f"[DEBUG ChatClient] Registration payload: {reg_payload}")
             reg_packet = pack_message(CMD_REGISTER, reg_payload.encode('utf-8'))
+            print(f"[DEBUG ChatClient] Registration packet size: {len(reg_packet)} bytes")
+            print(f"[DEBUG ChatClient] Sending registration packet...")
             self.sock.sendall(reg_packet)
+            print(f"[DEBUG ChatClient] Registration packet sent successfully!")
             
             self.running = True
+            print(f"[DEBUG ChatClient] Starting listen thread...")
             threading.Thread(target=self._listen_loop, daemon=True).start()
+            print(f"[DEBUG ChatClient] Listen thread started, returning True")
             return True
             
         except Exception as e:
+            print(f"[DEBUG ChatClient] EXCEPTION in connect(): {type(e).__name__}: {e}")
             print(f"ChatClient Connection Error: {e}")
+            import traceback
+            traceback.print_exc()
             self.disconnect()
             return False
 
@@ -86,15 +100,21 @@ class ChatClient:
 
     def _listen_loop(self):
         """Continuously listens for incoming control/chat messages."""
+        print(f"[DEBUG ChatClient] _listen_loop STARTED")
         while self.running:
             try:
+                print(f"[DEBUG ChatClient] Waiting for message...")
                 raw_message = read_tcp_message(self.sock)
+                print(f"[DEBUG ChatClient] read_tcp_message returned: {raw_message is not None}")
                 
                 if raw_message is None:
                     # Server closed connection or read failed
+                    print(f"[DEBUG ChatClient] raw_message is None, breaking listen loop")
                     break
                 
+                print(f"[DEBUG ChatClient] Unpacking message of length {len(raw_message)}...")
                 version, msg_type, _, _, payload = unpack_message(raw_message)
+                print(f"[DEBUG ChatClient] Message unpacked: type={msg_type}, payload_len={len(payload)}")
                 
                 if msg_type == MSG_CHAT:
                     self._handle_chat_message(payload)
@@ -110,12 +130,17 @@ class ChatClient:
                     print(f"ChatClient: Unknown message type {msg_type}")
 
             except socket.timeout:
+                print(f"[DEBUG ChatClient] Socket timeout in listen loop, continuing...")
                 continue
             except Exception as e:
+                print(f"[DEBUG ChatClient] EXCEPTION in listen loop: {type(e).__name__}: {e}")
                 if self.running:
                     print(f"ChatClient Listen Error: {e}")
+                    import traceback
+                    traceback.print_exc()
                 break
         
+        print(f"[DEBUG ChatClient] Listen loop ended, calling disconnect()")
         self.disconnect()
 
     def _handle_chat_message(self, payload):

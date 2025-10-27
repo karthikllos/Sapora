@@ -23,7 +23,7 @@ AUDIO_PORT = 6001         # UDP for audio streaming
 
 # --- Protocol & Buffer Sizes (in bytes) ---
 PROTOCOL_VERSION = 1
-HEADER_SIZE = 12             # Fixed header size for message packets (BBIHH struct)
+HEADER_SIZE = 10             # Fixed header size for message packets (BBIHH struct)
 BUFFER_SIZE = 65536          # Default socket buffer size (64 KB)
 UDP_STREAM_BUFFER = 65536    # 64 KB for UDP sockets
 MAX_MESSAGE_SIZE = 1048576   # 1 MB maximum for non-file payloads <--- ADDED THIS LINE

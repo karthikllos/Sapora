@@ -406,22 +406,33 @@ class SaporaGUI(QMainWindow):
     def connect_to_control(self):
         """Initializes all TCP and UDP clients."""
         
+        print(f"[DEBUG] connect_to_control() STARTED")
         print(f"[SaporaGUI] Attempting to connect to {self.server_ip}:{CONTROL_PORT}...")
         
         # 1. Chat/Control Client (TCP) - CRITICAL
         try:
+            print(f"[DEBUG] Creating ChatClient...")
             self.chat_client = ChatClient(self.server_ip, CONTROL_PORT, self.username)
+            print(f"[DEBUG] ChatClient object created successfully")
             
             print("[SaporaGUI] ChatClient created, attempting connection...")
+            print(f"[DEBUG] Calling chat_client.connect()...")
             
-            if self.chat_client.connect():
+            connection_result = self.chat_client.connect()
+            print(f"[DEBUG] chat_client.connect() returned: {connection_result}")
+            
+            if connection_result:
+                print(f"[DEBUG] Connection successful, setting callbacks...")
                 self.chat_client.set_callbacks(
                     self.gui_signals.user_list_updated.emit,
                     lambda sender, msg: self.gui_signals.chat_message_received.emit(sender, msg, False)
                 )
+                print(f"[DEBUG] Callbacks set, adding system message...")
                 self.add_system_message(f"✓ Connected to Control Server as {self.username}.")
                 print(f"[SaporaGUI] Successfully connected as {self.username}")
+                print(f"[DEBUG] Connection setup complete")
             else:
+                print(f"[DEBUG] Connection FAILED - connection_result was False")
                 error_msg = (
                     f"❌ Cannot connect to server at {self.server_ip}:{CONTROL_PORT}\n\n"
                     "Possible reasons:\n"
@@ -435,6 +446,7 @@ class SaporaGUI(QMainWindow):
                 self.add_system_message(error_msg)
                 
                 print(f"[SaporaGUI] Connection failed - showing error dialog")
+                print(f"[DEBUG] About to show QMessageBox.critical")
                 
                 # Show error dialog
                 QMessageBox.critical(
@@ -444,9 +456,12 @@ class SaporaGUI(QMainWindow):
                     "Please make sure the server is running:\n"
                     "  python server/server_main.py"
                 )
+                print(f"[DEBUG] QMessageBox closed, scheduling window close")
                 QTimer.singleShot(100, self.close)
+                print(f"[DEBUG] Returning from connect_to_control after failure")
                 return
         except Exception as e:
+            print(f"[DEBUG] EXCEPTION caught in connect_to_control: {type(e).__name__}: {e}")
             error_msg = (
                 f"❌ Connection error: {str(e)}\n\n"
                 f"Server: {self.server_ip}:{CONTROL_PORT}\n\n"
@@ -457,15 +472,19 @@ class SaporaGUI(QMainWindow):
             
             print(f"[SaporaGUI] Exception during connection: {e}")
             import traceback
+            print(f"[DEBUG] Full traceback:")
             traceback.print_exc()
             
+            print(f"[DEBUG] About to show exception QMessageBox")
             QMessageBox.critical(
                 self,
                 "Connection Error",
                 f"Error connecting to server:\n{str(e)}\n\n"
                 "Please start the server first."
             )
+            print(f"[DEBUG] Exception QMessageBox closed, scheduling window close")
             QTimer.singleShot(100, self.close)
+            print(f"[DEBUG] Returning from connect_to_control after exception")
             return
 
         # 2. Video Client (UDP)
@@ -502,6 +521,7 @@ class SaporaGUI(QMainWindow):
             self.add_system_message(f"✗ Failed to initialize Screen Share Client: {str(e)}")
             self.screen_client = None
         
+        print("[DEBUG] connect_to_control() COMPLETED SUCCESSFULLY")
         print("[SaporaGUI] All clients initialized")
 
     # --- UI Updates & Layout ---
