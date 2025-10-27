@@ -69,10 +69,16 @@ class UnifiedServer:
         print("\n" + "=" * 70)
         print("🚀 ALL SERVICES ACTIVE")
         print("=" * 70)
+        print(f"📊 Active clients: 0 | Monitoring connections...")
+        print("Press Ctrl+C to stop the server\n")
         
         try:
             while self.running:
-                time.sleep(1)
+                time.sleep(5)
+                # Report connection status every 5 seconds
+                client_count = len(self.manager.control_clients)
+                if client_count > 0:
+                    print(f"📊 Active clients: {client_count}")
         except KeyboardInterrupt:
             print("\nReceived keyboard interrupt.")
         finally:
