@@ -112,7 +112,7 @@ class InitializationWorker(QThread):
     def _check_dependencies(self):
         """Check if all required modules are available"""
         # Checks only standard/common dependencies listed in requirements.txt
-        required = ['cv2', 'numpy', 'pyaudio', 'PyQt5', 'mss']
+        required = ['cv2', 'numpy', 'pyaudio', 'PyQt5', 'mss', 'pyautogui', 'ffmpeg']
         missing = []
         
         for module in required:
