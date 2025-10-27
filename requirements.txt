@@ -22,5 +22,5 @@ mss>=9.0.1
 # These packages are included to fulfill the requirement list.
 ffmpeg-python>=0.2.0
 tqdm>=4.66.1
-
+pyautogui
 # ====================================================

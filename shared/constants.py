@@ -37,7 +37,7 @@ MAX_FILE_SIZE = 104857600    # 100 MB maximum file size
 VIDEO_WIDTH = 640
 VIDEO_HEIGHT = 480
 VIDEO_FPS = 15
-VIDEO_QUALITY = 80           # JPEG compression quality (0-100)
+VIDEO_QUALITY = 55           # JPEG compression quality (0-100) - Reduced for faster encode/decode
 VIDEO_STREAM_FORMAT = 'BGR'  # OpenCV default
 
 # Audio (Simplified to raw PCM for robust socket implementation)
