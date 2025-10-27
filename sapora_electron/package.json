@@ -1,0 +1,62 @@
+{
+  "name": "sapora-electron",
+  "version": "1.0.0",
+  "description": "Sapora - LAN Video Conferencing Suite (Zoom-like Electron UI)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "keywords": [
+    "sapora",
+    "video-conferencing",
+    "lan",
+    "electron",
+    "webrtc"
+  ],
+  "author": "Sapora Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@babel/preset-env": "^7.23.0",
+    "@babel/preset-react": "^7.22.0",
+    "electron": "^27.0.0",
+    "electron-builder": "^24.6.0"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.11.0",
+    "@emotion/styled": "^11.11.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socket.io-client": "^4.7.0",
+    "lucide-react": "^0.294.0",
+    "classnames": "^2.3.0"
+  },
+  "build": {
+    "appId": "com.sapora.app",
+    "productName": "Sapora",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}
