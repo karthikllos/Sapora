@@ -138,13 +138,20 @@ class ChatClient:
             raw = payload.decode('utf-8', errors='ignore')
             try:
                 obj = json.loads(raw)
+                # Filter by target if present
+                target = (obj.get('target') or 'all') if isinstance(obj, dict) else 'all'
+                if target.lower() != 'all' and target != self.username:
+                    return
                 if obj.get('type') == 'file_announce':
-                    # Invoke file callback
+                    # Deliver file announce to intended recipients only
                     if self.file_callback:
                         self.file_callback(obj)
                     return
                 sender = obj.get('sender', 'SYSTEM')
                 text = obj.get('text', raw)
+                # Annotate private messages
+                if target.lower() != 'all':
+                    text = f"(to {target}) {text}"
             except Exception:
                 msg = raw
                 sender, text = (msg.split(':', 1) + [""])[:2] if ':' in msg else ("SYSTEM", msg)
@@ -157,6 +164,10 @@ class ChatClient:
         try:
             raw = payload.decode('utf-8', errors='ignore')
             obj = json.loads(raw)
+            # Filter by target on file notify, if present
+            target = obj.get('target') or 'all'
+            if target.lower() != 'all' and target != self.username:
+                return
             if self.file_callback:
                 self.file_callback(obj)
         except Exception as e:

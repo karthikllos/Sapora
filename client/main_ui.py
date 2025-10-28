@@ -868,7 +868,10 @@ class SaporaMainWindow(QMainWindow):
         finally:
             # Local echo so user can see their own message
             try:
-                self._on_chat_message_signal(self.username or "Me", text)
+                local_text = text
+                if target and target.lower() != 'all':
+                    local_text = f"(to {target}) {text}"
+                self._on_chat_message_signal(self.username or "Me", local_text)
             except Exception:
                 pass
             if not sent:

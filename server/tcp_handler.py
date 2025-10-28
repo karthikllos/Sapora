@@ -72,7 +72,16 @@ class TCPHandler(threading.Thread):
             data = json.loads(payload.decode('utf-8'))
             self.username = data.get('username', f"User-{self.port}")
             self.meeting_id = data.get('meeting_id', 'default')
+            # Update manager state with username and room for UDP room-based routing
             self.manager.update_client_status(self.sock, username=self.username)
+            try:
+                # Ensure room is set so get_room_by_ip works for UDP servers
+                if hasattr(self.manager, 'set_client_room'):
+                    self.manager.set_client_room(self.sock, self.meeting_id)
+                else:
+                    self.manager.update_client_status(self.sock, room=self.meeting_id)
+            except Exception:
+                pass
             print(f"[TCPHandler] Registered: {self.username} ({self.ip}) in room '{self.meeting_id}'")
             
             # Join room in server rooms map
@@ -95,11 +104,13 @@ class TCPHandler(threading.Thread):
             target_username = None
             try:
                 obj = json.loads(raw)
-                text = obj.get('text', '')
+                # Normalize fields and preserve JSON payload on the wire (enables file_announce, rich chat)
+                if 'sender' not in obj or not obj.get('sender'):
+                    obj['sender'] = self.username
+                if 'meeting_id' not in obj or not obj.get('meeting_id'):
+                    obj['meeting_id'] = self.meeting_id
                 target_username = obj.get('target')
-                sender_name = obj.get('sender', self.username)
-                msg_for_wire = f"{sender_name}: {text}".encode('utf-8')
-                chat_packet = pack_message(MSG_CHAT, msg_for_wire)
+                chat_packet = pack_message(MSG_CHAT, json.dumps(obj).encode('utf-8'))
             except Exception:
                 # legacy mode: relay as-is to room
                 text = raw
