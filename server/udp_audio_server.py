@@ -125,11 +125,33 @@ class UDPAudioServer(threading.Thread):
                 time.sleep(sleep_time)
                 continue
 
-            # Targets are registered audio listeners (IP,port)
-            targets = self.manager.get_audio_listeners()
+            # Targets are registered audio listeners (IP,port) filtered by room of each target
+            # We'll mix per target within the same room as the target
+            try:
+                all_targets = self.manager.get_audio_listeners()
+            except Exception:
+                all_targets = []
 
-            # Broadcast a mixed chunk tailored for each target (exclude their own audio)
-            for target in list(targets):
+            for target in list(all_targets):
+                try:
+                    target_room = self.manager.get_room_by_ip(target[0])
+                except Exception:
+                    target_room = 'default'
+
+                # Filter chunks to only include sources in the same room
+                sources_for_mix = []
+                for (addr, chunk) in chunks_to_mix:
+                    try:
+                        if tuple(addr) == tuple(target):
+                            continue  # exclude self audio
+                        src_room = self.manager.get_room_by_ip(addr[0])
+                        if src_room == target_room:
+                            sources_for_mix.append(chunk)
+                    except Exception:
+                        continue
+
+                if not sources_for_mix:
+                    continue
                 # target may be stored in manager as (ip,port) or similar; ensure tuple
                 target_key = tuple(target)
                 # Gather sources excluding the target IP:port

@@ -43,6 +43,9 @@ class AudioClient:
         
         self.send_thread = None
         self.recv_thread = None
+        
+        # Mic mute state (True = sending audio, False = muted)
+        self.mic_enabled = True
 
     # --- Sender Logic (Microphone) ---
 
@@ -95,7 +98,8 @@ class AudioClient:
                     print(f"AudioClient Send read error: {e}")
                     audio_data = None
 
-                if audio_data:
+                # If mic is enabled and we have data, send it; otherwise drop it (mute)
+                if audio_data and self.mic_enabled:
                     packet = pack_message(STREAM_AUDIO, audio_data)
                     try:
                         self.send_sock.sendto(packet, (self.server_ip, self.server_port))
@@ -183,6 +187,10 @@ class AudioClient:
                     pass
 
     # --- Cleanup ---
+
+    def set_mic_enabled(self, enabled: bool):
+        """Enable/disable microphone sending without stopping playback"""
+        self.mic_enabled = bool(enabled)
 
     def stop_streaming(self):
         """Cleans up all audio resources and closes sockets."""

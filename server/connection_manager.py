@@ -24,9 +24,12 @@ class ConnectionManager:
     def __init__(self):
         self.running = True
         
-        # TCP Control/Chat Clients: {socket: {'addr': (ip, port), 'username': str, 'last_seen': float, 'id': str}}
+        # TCP Control/Chat Clients: {socket: {'addr': (ip, port), 'username': str, 'last_seen': float, 'id': str, 'room': str}}
         self.control_clients = {}
         self.control_clients_lock = threading.Lock()
+        
+        # Back-reference to server for room management (set externally)
+        self.server_ref = None
         
         # UDP Streaming Clients: {ip_str: {'video': (ip, port) | None, 'audio': (ip, port) | None, 'last_seen': float}}
         self.stream_clients = {}
@@ -47,7 +50,8 @@ class ConnectionManager:
                 'username': username,
                 'last_seen': time.time(),
                 'id': client_id,
-                'socket': client_socket
+                'socket': client_socket,
+                'room': 'default'
             }
             print(f"Manager: Client added: {username} from {address[0]}. Total: {len(self.control_clients)}")
             
@@ -83,15 +87,16 @@ class ConnectionManager:
         
         return username, address
 
-    def update_client_status(self, client_socket, username=None):
-        """Updates client's last seen time and optionally username."""
+    def update_client_status(self, client_socket, username=None, room=None):
+        """Updates client's last seen time and optionally username and room."""
         with self.control_clients_lock:
             if client_socket in self.control_clients:
                 self.control_clients[client_socket]['last_seen'] = time.time()
                 if username and self.control_clients[client_socket]['username'] == "Unknown":
                      self.control_clients[client_socket]['username'] = username
-                     # If username was just set, re-broadcast the list
                      threading.Thread(target=lambda: broadcast_user_list(self), daemon=True).start()
+                if room:
+                     self.control_clients[client_socket]['room'] = room
                 return True
             return False
 
@@ -140,22 +145,24 @@ class ConnectionManager:
             
             self.stream_clients[ip_addr]['last_seen'] = time.time()
 
-    def get_video_listeners(self):
-        """Returns a list of addresses registered to receive video streams."""
+    def get_video_listeners(self, room: str = None):
+        """Returns a list of addresses registered to receive video streams, optionally filtered by room."""
         listeners = []
         with self.stream_clients_lock:
             for ip_addr, info in self.stream_clients.items():
                 if info['video']:
-                    listeners.append(info['video'])
+                    if room is None or self._ip_in_room(ip_addr, room):
+                        listeners.append(info['video'])
         return listeners
 
-    def get_audio_listeners(self):
-        """Returns a list of addresses registered to receive audio streams."""
+    def get_audio_listeners(self, room: str = None):
+        """Returns a list of addresses registered to receive audio streams, optionally filtered by room."""
         listeners = []
         with self.stream_clients_lock:
             for ip_addr, info in self.stream_clients.items():
                 if info['audio']:
-                    listeners.append(info['audio'])
+                    if room is None or self._ip_in_room(ip_addr, room):
+                        listeners.append(info['audio'])
         return listeners
 
     # --- Server Maintenance ---
@@ -186,6 +193,39 @@ class ConnectionManager:
                 self.remove_client(sock)
         
         print("Manager: Heartbeat thread stopped.")
+
+    def _ip_in_room(self, ip_addr: str, room: str) -> bool:
+        """Check if a given IP belongs to a client in the specified room."""
+        with self.control_clients_lock:
+            for info in self.control_clients.values():
+                if info['addr'][0] == ip_addr and info.get('room', 'default') == room:
+                    return True
+        return False
+
+    def get_room_by_ip(self, ip_addr: str) -> str:
+        with self.control_clients_lock:
+            for info in self.control_clients.values():
+                if info['addr'][0] == ip_addr:
+                    return info.get('room', 'default')
+        return 'default'
+
+    def set_client_room(self, client_socket, room: str):
+        with self.control_clients_lock:
+            if client_socket in self.control_clients:
+                self.control_clients[client_socket]['room'] = room
+                threading.Thread(target=lambda: broadcast_user_list(self), daemon=True).start()
+
+    def unregister_stream(self, stream_type: str, key):
+        """Optional: remove a stream from stream_clients when client goes stale."""
+        ip = key[0] if isinstance(key, (tuple, list)) else None
+        if not ip:
+            return
+        with self.stream_clients_lock:
+            if ip in self.stream_clients:
+                if stream_type == 'audio':
+                    self.stream_clients[ip]['audio'] = None
+                elif stream_type == 'video':
+                    self.stream_clients[ip]['video'] = None
 
     def stop(self):
         """Shuts down the connection manager and all associated threads/sockets."""

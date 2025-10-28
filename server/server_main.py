@@ -20,6 +20,7 @@ from server.udp_audio_server import UDPAudioServer
 from server.udp_video_server import UDPVideoServer
 from server.file_server import FileTransferServer
 from server.screen_share_server import ScreenShareServer
+from shared.lan_discovery import start_server_discovery
 
 # Flask-SocketIO for WebSocket gateway to Electron
 try:
@@ -38,8 +39,14 @@ class SaporaServer:
     
     def __init__(self, enable_websocket=True):
         self.manager = ConnectionManager()
+        self.manager.server_ref = self  # Allow TCPHandler to access room methods
         self.services = {}
         self.running = False
+        
+        # Multi-room support
+        self.rooms = {}  # meeting_id: {'clients': [sockets], 'metadata': {}}
+        self.client_rooms = {}  # client_socket: meeting_id
+        self.rooms_lock = threading.Lock()
         
         # WebSocket gateway (optional)
         self.websocket_enabled = enable_websocket and WEBSOCKET_AVAILABLE
@@ -101,7 +108,13 @@ class SaporaServer:
         self.services['screen'] = screen_server
         time.sleep(0.2)
         
-        # 6. Start WebSocket Gateway for Electron (if enabled)
+        # 6. Start LAN discovery broadcaster
+        try:
+            self.discovery = start_server_discovery("Sapora Host", 5000)
+        except Exception as e:
+            print(f"⚠️  Discovery start failed: {e}")
+        
+        # 7. Start WebSocket Gateway for Electron (if enabled)
         if self.websocket_enabled:
             print("🌐 Starting WebSocket Gateway for Electron...")
             self._start_websocket_gateway()
@@ -226,6 +239,14 @@ class SaporaServer:
             print("   • Stopping WebSocket Gateway...")
             try:
                 self.socketio.stop()
+            except:
+                pass
+        
+        # Stop LAN discovery
+        if hasattr(self, 'discovery') and self.discovery:
+            print("   • Stopping LAN Discovery...")
+            try:
+                self.discovery.stop()
             except:
                 pass
         

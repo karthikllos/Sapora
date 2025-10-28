@@ -28,35 +28,40 @@ from shared.protocol import SCREEN_SHARE  # keep same constant
 # No need for unpack_message here — not used
 
 class ScreenShareClient:
-    def __init__(self, server_ip, mode="viewer"):
+    def __init__(self, server_ip, mode="viewer", frame_callback=None, local_preview_callback=None, status_callback=None):
         self.server_ip = server_ip
         self.mode = mode.lower()
         self.socket = None
         self.running = False
+        # Optional callbacks
+        self.frame_callback = frame_callback              # for viewer frames
+        self.local_preview_callback = local_preview_callback  # for presenter local preview
+        self.status_callback = status_callback or (lambda msg: None)
 
     def connect(self):
-        """Connect to the screen share server"""
+        """Connect to the screen share server (non-fatal if fails; allows local preview)."""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.server_ip, SCREEN_SHARE_PORT))
-            print(f"✅ Connected to Screen Share Server at {self.server_ip}:{SCREEN_SHARE_PORT}")
+            self.status_callback(f"✅ ScreenShare connected {self.server_ip}:{SCREEN_SHARE_PORT}")
             return True
         except Exception as e:
-            print(f"❌ Connection failed: {e}")
+            # Keep running for local preview, but note we won't send frames
+            self.socket = None
+            self.status_callback(f"⚠️ ScreenShare connect failed (preview only): {e}")
             return False
 
     def start(self):
         """Start as presenter or viewer"""
-        if not self.connect():
-            return
+        self.connect()  # Try to connect, but continue even if it fails for local preview
         
         self.running = True
 
         if self.mode == "presenter":
-            print("🎬 Starting in Presenter Mode (sharing your screen)...")
+            self.status_callback("🎬 Presenter Mode: sharing your screen...")
             self._start_presenter()
         else:
-            print("👁️  Starting in Viewer Mode (watching screen share)...")
+            self.status_callback("👁️ Viewer Mode: watching screen share...")
             self._start_viewer()
 
     def _start_presenter(self):
@@ -71,6 +76,13 @@ class ScreenShareClient:
                 # Resize for efficiency
                 frame = cv2.resize(frame, (960, 540))
 
+                # Local preview callback before encoding
+                try:
+                    if self.local_preview_callback:
+                        self.local_preview_callback(frame)
+                except Exception:
+                    pass
+
                 # Encode as JPEG
                 ret, encoded_frame = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if not ret:
@@ -79,17 +91,21 @@ class ScreenShareClient:
                 frame_data = encoded_frame.tobytes()
                 frame_size = len(frame_data)
 
-                # Send size + data
-                self.socket.sendall(struct.pack('!I', frame_size) + frame_data)
+                # Send size + data if connected; otherwise skip (local preview only)
+                if self.socket:
+                    self.socket.sendall(struct.pack('!I', frame_size) + frame_data)
 
                 # Control frame rate
                 time.sleep(0.1)
 
         except Exception as e:
-            print(f"⚠️  Presenter error: {e}")
+            self.status_callback(f"⚠️ Presenter error: {e}")
         finally:
-            self.socket.close()
-            print("🛑 Presenter stopped")
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.status_callback("🛑 Presenter stopped")
 
     def _start_viewer(self):
         """Receive and display frames from the server"""
@@ -112,17 +128,38 @@ class ScreenShareClient:
                 if frame is None:
                     continue
 
-                cv2.imshow("🖥️ Screen Share - Viewer", frame)
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                # If a callback exists, pass frame (in BGR) to it; else fallback to cv2 window
+                if self.frame_callback:
+                    try:
+                        self.frame_callback(frame)
+                    except Exception:
+                        pass
+                else:
+                    cv2.imshow("🖥️ Screen Share - Viewer", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
 
         except Exception as e:
-            print(f"⚠️  Viewer error: {e}")
+            self.status_callback(f"⚠️ Viewer error: {e}")
         finally:
-            self.socket.close()
-            cv2.destroyAllWindows()
-            print("🛑 Viewer disconnected")
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+            self.status_callback("🛑 Viewer disconnected")
+
+    def stop(self):
+        """Stop running and close socket"""
+        self.running = False
+        try:
+            if self.socket:
+                self.socket.close()
+        except Exception:
+            pass
 
     def _recv_exact(self, num_bytes):
         """Receive exactly num_bytes"""

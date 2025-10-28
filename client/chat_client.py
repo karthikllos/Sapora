@@ -19,10 +19,11 @@ from client.utils import pack_message, unpack_message, read_tcp_message
 class ChatClient:
     """Handles TCP-based control and chat communication."""
 
-    def __init__(self, server_ip, server_port, username):
+    def __init__(self, server_ip, server_port, username, meeting_id: str = 'default'):
         self.server_ip = server_ip
         self.server_port = server_port
         self.username = username
+        self.meeting_id = meeting_id
 
         self.running = False
         self.sock = None
@@ -46,8 +47,8 @@ class ChatClient:
             self.sock.settimeout(CONNECTION_TIMEOUT)
             self.sock.connect((self.server_ip, self.server_port))
 
-            # Register username
-            reg_payload = json.dumps({'username': self.username})
+            # Register username + meeting_id
+            reg_payload = json.dumps({'username': self.username, 'meeting_id': self.meeting_id})
             reg_packet = pack_message(CMD_REGISTER, reg_payload.encode('utf-8'))
             self.sock.sendall(reg_packet)
 

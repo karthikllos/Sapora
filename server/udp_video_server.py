@@ -63,8 +63,13 @@ class UDPVideoServer(threading.Thread):
             self.stop()
 
     def _broadcast_frame(self, frame_data, sender_addr):
-        """Sends the frame to all clients registered for video listening."""
-        listeners = self.manager.get_video_listeners()
+        """Sends the frame to all clients registered for video listening in the same room."""
+        try:
+            sender_ip = sender_addr[0]
+            room = self.manager.get_room_by_ip(sender_ip)
+            listeners = self.manager.get_video_listeners(room=room)
+        except Exception:
+            listeners = self.manager.get_video_listeners()
         
         for listener_addr in listeners:
             # Do not send back to the sender

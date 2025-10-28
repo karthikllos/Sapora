@@ -19,13 +19,15 @@ from server.utils import read_tcp_message, unpack_message, pack_message, get_mes
 class TCPHandler(threading.Thread):
     """Handles one TCP client connection."""
 
-    def __init__(self, manager, client_socket, address):
+    def __init__(self, manager, client_socket, address, server=None):
         super().__init__(daemon=True)
         self.manager = manager
+        self.server = server  # Reference to SaporaServer for room logic
         self.sock = client_socket
         self.address = address
         self.ip, self.port = address
         self.username = "Unknown"
+        self.meeting_id = "default"
         self.running = True
 
         self.sock.settimeout(SOCKET_TIMEOUT)
@@ -65,44 +67,80 @@ class TCPHandler(threading.Thread):
             self._cleanup()
 
     def _handle_register(self, payload):
-        """Registers client username."""
+        """Registers client username and joins room if provided."""
         try:
             data = json.loads(payload.decode('utf-8'))
             self.username = data.get('username', f"User-{self.port}")
+            self.meeting_id = data.get('meeting_id', 'default')
             self.manager.update_client_status(self.sock, username=self.username)
-            print(f"[TCPHandler] Registered: {self.username} ({self.ip})")
+            print(f"[TCPHandler] Registered: {self.username} ({self.ip}) in room '{self.meeting_id}'")
+            
+            # Join room in server rooms map
+            if self.server:
+                with self.server.rooms_lock:
+                    room = self.server.rooms.setdefault(self.meeting_id, {'clients': [], 'metadata': {}})
+                    if self.sock not in room['clients']:
+                        room['clients'].append(self.sock)
+                    self.server.client_rooms[self.sock] = self.meeting_id
         except Exception as e:
             print(f"[TCPHandler] Registration Error: {e}")
 
     def _handle_chat(self, payload):
-        """Broadcasts chat message to all clients."""
+        """Broadcasts chat message to all clients in the same room."""
         try:
             msg = payload.decode('utf-8', errors='ignore')
-            print(f"[Chat] {self.username}: {msg}")
+            print(f"[Chat][{self.meeting_id}] {self.username}: {msg}")
             chat_packet = pack_message(MSG_CHAT, payload)
 
-            disconnected = []
-            with self.manager.control_clients_lock:
-                for client_sock in list(self.manager.control_clients.keys()):
-                    if client_sock != self.sock:
-                        try:
-                            client_sock.sendall(chat_packet)
-                        except Exception:
-                            disconnected.append(client_sock)
+            targets = []
+            if self.server:
+                with self.server.rooms_lock:
+                    room = self.server.rooms.get(self.meeting_id, {'clients': []})
+                    targets = [s for s in room['clients'] if s != self.sock]
+            else:
+                with self.manager.control_clients_lock:
+                    targets = [s for s in self.manager.control_clients.keys() if s != self.sock]
 
-            # Cleanup disconnected clients
+            disconnected = []
+            for client_sock in targets:
+                try:
+                    client_sock.sendall(chat_packet)
+                except Exception:
+                    disconnected.append(client_sock)
+
             for sock in disconnected:
                 self.manager.remove_client(sock)
+                if self.server:
+                    try:
+                        room = self.server.rooms.get(self.meeting_id)
+                        if room and sock in room['clients']:
+                            room['clients'].remove(sock)
+                    except:
+                        pass
 
         except Exception as e:
             print(f"[TCPHandler] Chat Broadcast Error: {e}")
 
     def _cleanup(self):
-        """Removes client from manager and closes socket."""
+        """Removes client from manager and closes socket; leaves room."""
         if not self.running:
             return
         self.running = False
         self.manager.remove_client(self.sock)
+
+        # Remove from room
+        if self.server:
+            with self.server.rooms_lock:
+                room_id = self.server.client_rooms.pop(self.sock, None)
+                if room_id and room_id in self.server.rooms:
+                    room = self.server.rooms[room_id]
+                    if self.sock in room['clients']:
+                        room['clients'].remove(self.sock)
+                    # delete empty room
+                    if not room['clients']:
+                        del self.server.rooms[room_id]
+                        print(f"[Rooms] Removed empty room '{room_id}'")
+
         try:
             self.sock.close()
         except:
@@ -131,7 +169,7 @@ class ControlServer(threading.Thread):
             while self.manager.running:
                 try:
                     client_socket, address = self.server_socket.accept()
-                    handler = TCPHandler(self.manager, client_socket, address)
+                    handler = TCPHandler(self.manager, client_socket, address, server=self.manager.server_ref if hasattr(self.manager, 'server_ref') else None)
                     handler.start()
                 except socket.timeout:
                     continue

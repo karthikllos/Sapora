@@ -18,6 +18,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QObject
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
 import cv2
 import numpy as np
+import json
+import subprocess
+from datetime import datetime
+from typing import Optional
 
 # Import client modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -27,6 +31,7 @@ from client.chat_client import ChatClient
 from client.file_client import FileTransferClient
 from client.screen_share_client import ScreenShareClient
 from shared.constants import DEFAULT_SERVER_IP, VIDEO_PORT, CONTROL_PORT
+from shared.lan_discovery import start_client_discovery
 
 
 # ============================================================================
@@ -116,17 +121,21 @@ class FileTransferThread(QThread):
 # ============================================================================
 
 class LoginDialog(QDialog):
-    """Initial screen for entering server IP and username"""
+    """Initial screen for entering server IP, meeting ID and username with LAN discovery"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, defaults: Optional[dict] = None):
         super().__init__(parent)
         self.setWindowTitle("Join Sapora Meeting")
-        self.setFixedSize(400, 250)
+        self.setFixedSize(460, 420)
+        self.discovery = None
+        self.defaults = defaults or {}
         self.setup_ui()
+        self._apply_defaults()
+        self._start_discovery()
         
     def setup_ui(self):
         layout = QVBoxLayout()
-        layout.setSpacing(15)
+        layout.setSpacing(12)
         
         # Title
         title = QLabel("🎥 Sapora Video Conference")
@@ -141,6 +150,21 @@ class LoginDialog(QDialog):
         self.ip_input.setText(DEFAULT_SERVER_IP)
         layout.addWidget(ip_label)
         layout.addWidget(self.ip_input)
+        
+        # Discovered servers list
+        from PyQt6.QtWidgets import QListWidget
+        self.discovery_list = QListWidget()
+        self.discovery_list.setMaximumHeight(100)
+        self.discovery_list.itemClicked.connect(self._apply_discovered_server)
+        layout.addWidget(QLabel("Discovered Servers:"))
+        layout.addWidget(self.discovery_list)
+        
+        # Meeting ID input
+        meeting_label = QLabel("Meeting ID:")
+        self.meeting_input = QLineEdit()
+        self.meeting_input.setPlaceholderText("e.g., team123 (default if blank)")
+        layout.addWidget(meeting_label)
+        layout.addWidget(self.meeting_input)
         
         # Username input
         user_label = QLabel("Your Name:")
@@ -158,12 +182,138 @@ class LoginDialog(QDialog):
         self.setLayout(layout)
     
     def get_credentials(self):
-        return self.ip_input.text().strip(), self.username_input.text().strip()
+        return (
+            self.ip_input.text().strip(),
+            self.username_input.text().strip(),
+            (self.meeting_input.text().strip() or 'default')
+        )
+    
+    def _apply_defaults(self):
+        try:
+            if 'server_ip' in self.defaults:
+                self.ip_input.setText(self.defaults['server_ip'])
+            if 'meeting_id' in self.defaults and hasattr(self, 'meeting_input'):
+                self.meeting_input.setText(self.defaults['meeting_id'])
+            if 'username' in self.defaults:
+                self.username_input.setText(self.defaults['username'])
+        except Exception:
+            pass
+    
+    def _start_discovery(self):
+        try:
+            self.discovery = start_client_discovery(callback=self._on_discovered_server)
+        except Exception as e:
+            print(f"[Login] Discovery disabled: {e}")
+    
+    def _on_discovered_server(self, info: dict):
+        try:
+            from PyQt6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(f"{info['name']} — {info['ip']}:{info['port']}")
+            item.setData(Qt.ItemDataRole.UserRole, info)
+            self.discovery_list.addItem(item)
+        except Exception:
+            pass
+    
+    def _apply_discovered_server(self, item):
+        info = item.data(Qt.ItemDataRole.UserRole)
+        if info:
+            self.ip_input.setText(info.get('ip', DEFAULT_SERVER_IP))
 
 
 # ============================================================================
 # MAIN APPLICATION WINDOW
 # ============================================================================
+
+class SchedulerDialog(QDialog):
+    """Simple meeting scheduler dialog"""
+    def __init__(self, parent=None, storage_path: Optional[Path] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Meeting Scheduler")
+        self.resize(520, 420)
+        self.storage_path = storage_path or (Path(__file__).parent / 'meetings.json')
+        from PyQt6.QtWidgets import QListWidget
+        self.list = QListWidget()
+        self.meeting_id = QLineEdit()
+        self.title = QLineEdit()
+        self.time = QLineEdit()
+        self._build_ui()
+        self._load()
+    
+    def _build_ui(self):
+        from PyQt6.QtWidgets import QFormLayout, QDialogButtonBox
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.list)
+        form = QFormLayout()
+        form.addRow("Meeting ID", self.meeting_id)
+        form.addRow("Title", self.title)
+        form.addRow("Time (YYYY-MM-DDTHH:MM)", self.time)
+        layout.addLayout(form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Discard)
+        btns.accepted.connect(self._save_entry)
+        btns.rejected.connect(self._delete_selected)
+        layout.addWidget(btns)
+        self.list.itemSelectionChanged.connect(self._on_select)
+    
+    def _load(self):
+        self.list.clear()
+        try:
+            data = json.loads(self.storage_path.read_text(encoding='utf-8'))
+        except Exception:
+            data = []
+        for entry in data:
+            from PyQt6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(f"{entry.get('meeting_id')} — {entry.get('title')} — {entry.get('time')}")
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            self.list.addItem(item)
+    
+    def _persist(self, entries):
+        try:
+            self.storage_path.write_text(json.dumps(entries, indent=2), encoding='utf-8')
+        except Exception as e:
+            print(f"[Scheduler] Save error: {e}")
+    
+    def _entries(self):
+        items = []
+        for i in range(self.list.count()):
+            items.append(self.list.item(i).data(Qt.ItemDataRole.UserRole))
+        return items
+    
+    def _save_entry(self):
+        entry = {
+            'meeting_id': self.meeting_id.text().strip(),
+            'title': self.title.text().strip(),
+            'time': self.time.text().strip()
+        }
+        if not entry['meeting_id'] or not entry['time']:
+            QMessageBox.warning(self, "Invalid", "Meeting ID and Time are required")
+            return
+        # replace or add
+        entries = [e for e in self._entries() if e['meeting_id'] != entry['meeting_id']]
+        entries.append(entry)
+        # rebuild list
+        self.list.clear()
+        for e in entries:
+            from PyQt6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(f"{e.get('meeting_id')} — {e.get('title')} — {e.get('time')}")
+            item.setData(Qt.ItemDataRole.UserRole, e)
+            self.list.addItem(item)
+        self._persist(entries)
+    
+    def _delete_selected(self):
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.takeItem(row)
+            self._persist(self._entries())
+    
+    def _on_select(self):
+        item = self.list.currentItem()
+        if not item:
+            return
+        e = item.data(Qt.ItemDataRole.UserRole)
+        self.meeting_id.setText(e.get('meeting_id',''))
+        self.title.setText(e.get('title',''))
+        self.time.setText(e.get('time',''))
+
 
 class SaporaMainWindow(QMainWindow):
     """Main application window with Zoom-like interface"""
@@ -172,17 +322,21 @@ class SaporaMainWindow(QMainWindow):
     chat_message_signal = pyqtSignal(str, str)   # sender, message
     user_list_signal = pyqtSignal(object)        # list of users
     frame_signal = pyqtSignal(object)            # (source_ip, frame) or frame
+    screen_frame_signal = pyqtSignal(object)     # screen share frame (BGR)
+    local_screen_signal = pyqtSignal(object)     # local presenter preview frame (BGR)
     file_status_signal = pyqtSignal(str)         # file status messages
     status_signal = pyqtSignal(str)              # generic status updates
     
-    def __init__(self):
+    def __init__(self, prefill: Optional[dict] = None):
         super().__init__()
         self.setWindowTitle("Sapora - Video Conference")
+        self.prefill = prefill or {}
         self.setMinimumSize(1200, 700)
         
         # Connection details
         self.server_ip = None
         self.username = None
+        self.meeting_id = 'default'
         
         # Client instances
         self.video_client = None
@@ -208,6 +362,8 @@ class SaporaMainWindow(QMainWindow):
         self.chat_message_signal.connect(self._on_chat_message_signal)
         self.user_list_signal.connect(self._on_user_list_signal)
         self.frame_signal.connect(self._on_frame_signal)
+        self.screen_frame_signal.connect(self._on_screen_frame_signal)
+        self.local_screen_signal.connect(self._on_screen_frame_signal)
         self.file_status_signal.connect(self._on_file_status_signal)
         self.status_signal.connect(self._on_status_signal)
         
@@ -216,9 +372,9 @@ class SaporaMainWindow(QMainWindow):
         
     def show_login(self):
         """Display login dialog and initialize on success"""
-        dialog = LoginDialog(self)
+        dialog = LoginDialog(self, defaults=self.prefill)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.server_ip, self.username = dialog.get_credentials()
+            self.server_ip, self.username, self.meeting_id = dialog.get_credentials()
             
             if not self.server_ip or not self.username:
                 QMessageBox.warning(self, "Invalid Input", "Please enter both server IP and username.")
@@ -268,7 +424,8 @@ class SaporaMainWindow(QMainWindow):
         self.chat_client = ChatClient(
             server_ip=self.server_ip,
             server_port=CONTROL_PORT,
-            username=self.username
+            username=self.username,
+            meeting_id=self.meeting_id
         )
         # chat_client will call these callbacks from its network thread; signals queue to GUI thread
         self.chat_client.set_callbacks(
@@ -282,21 +439,19 @@ class SaporaMainWindow(QMainWindow):
             status_callback=self.file_status_signal.emit
         )
         
-        # Screen Share Client
-        # Provide a status callback via status_signal
-        try:
-            self.screen_client = ScreenShareClient(
-                server_ip=self.server_ip,
-                mode="presenter",
-                status_callback=self.status_signal.emit
-            )
-        except TypeError:
-            # If ScreenShareClient doesn't accept status_callback, instantiate without it,
-            # but we'll still call start in a thread and catch exceptions.
-            self.screen_client = ScreenShareClient(
-                server_ip=self.server_ip,
-                mode="presenter"
-            )
+        # Screen Share: presenter (local preview) and viewer (remote)
+        self.screen_presenter = ScreenShareClient(
+            server_ip=self.server_ip,
+            mode="presenter",
+            local_preview_callback=self.local_screen_signal.emit,
+            status_callback=self.status_signal.emit
+        )
+        self.screen_viewer = ScreenShareClient(
+            server_ip=self.server_ip,
+            mode="viewer",
+            frame_callback=self.screen_frame_signal.emit,
+            status_callback=self.status_signal.emit
+        )
     
     def setup_ui(self):
         """Build the main interface"""
@@ -313,7 +468,7 @@ class SaporaMainWindow(QMainWindow):
         # Top bar
         main_layout.addWidget(self.create_top_bar())
         
-        # Content area (video + chat)
+        # Content area (video + screen share + chat)
         content_layout = QHBoxLayout()
         content_layout.setSpacing(0)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -322,10 +477,14 @@ class SaporaMainWindow(QMainWindow):
         self.video_widget = self.create_video_area()
         content_layout.addWidget(self.video_widget, stretch=3)
         
+        # Screen share area
+        self.screen_widget = self.create_screen_area()
+        content_layout.addWidget(self.screen_widget, stretch=3)
+        
         # Chat panel (initially hidden)
         self.chat_panel = self.create_chat_panel()
         self.chat_panel.setVisible(False)
-        content_layout.addWidget(self.chat_panel, stretch=1)
+        content_layout.addWidget(self.chat_panel, stretch=2)
         
         main_layout.addLayout(content_layout)
         
@@ -336,6 +495,11 @@ class SaporaMainWindow(QMainWindow):
         self.display_timer = QTimer()
         self.display_timer.timeout.connect(self.update_video_display)
         self.display_timer.start(33)  # ~30 FPS
+        
+        # Scheduler timer (checks every 30s)
+        self.scheduler_timer = QTimer()
+        self.scheduler_timer.timeout.connect(self._check_scheduled_meetings)
+        self.scheduler_timer.start(30000)
     
     def load_stylesheet(self):
         """Load style.qss if available"""
@@ -354,9 +518,14 @@ class SaporaMainWindow(QMainWindow):
         layout.setContentsMargins(15, 5, 15, 5)
         
         # Meeting info
-        self.meeting_label = QLabel(f"📹 Sapora Meeting")
+        self.meeting_label = QLabel(f"📹 Sapora Meeting — {self.meeting_id}")
         self.meeting_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         layout.addWidget(self.meeting_label)
+        
+        # Scheduler button
+        sched_btn = QPushButton("🗓 Scheduler")
+        sched_btn.clicked.connect(self._open_scheduler)
+        layout.addWidget(sched_btn)
         
         layout.addStretch()
         
@@ -389,6 +558,26 @@ class SaporaMainWindow(QMainWindow):
         self.video_label.setText("📹\n\nNo Video Feed\n\nClick 'Start Video' to begin")
         
         layout.addWidget(self.video_label)
+        
+        return widget
+    
+    def create_screen_area(self):
+        """Creates the screen share display area"""
+        widget = QFrame()
+        widget.setObjectName("screenArea")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        title = QLabel("🖥 Screen Share")
+        title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        layout.addWidget(title)
+        
+        self.screen_label = QLabel()
+        self.screen_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.screen_label.setMinimumSize(480, 270)
+        self.screen_label.setStyleSheet("background-color: #121212; border-radius: 10px;")
+        self.screen_label.setText("🖥\n\nNo Screen Share\n\nWaiting for presenter...")
+        layout.addWidget(self.screen_label)
         
         return widget
     
@@ -501,6 +690,9 @@ class SaporaMainWindow(QMainWindow):
         """Establish connection to the server"""
         # Connect chat client (TCP control)
         if self.chat_client.connect():
+            # Start screen viewer in background to receive remote shares
+            import threading
+            threading.Thread(target=self.screen_viewer.start, daemon=True).start()
             self.status_label.setText("● Connected")
             self.status_label.setStyleSheet("color: #4CAF50;")
             self.show_notification("Connected to server!")
@@ -607,32 +799,31 @@ class SaporaMainWindow(QMainWindow):
     # ========================================================================
     
     def toggle_audio(self):
-        """Start/stop audio streaming"""
-        if not self.audio_enabled:
-            # Start audio
-            success = self.audio_client.start_streaming(self.on_audio_status)
-            if success:
-                self.audio_enabled = True
-                self.audio_btn.setText("🎙 Mute")
-                self.audio_btn.setChecked(True)
-                
-                # Start receiver thread
-                self.audio_thread = AudioStreamThread(self.audio_client)
-                self.audio_thread.status_update.connect(self.show_notification)
-                self.audio_thread.start()
-        else:
-            # Stop audio
-            try:
-                self.audio_client.stop_streaming()
-            except Exception:
-                pass
-            if self.audio_thread:
-                self.audio_thread.stop()
-                self.audio_thread.wait(2000)
-            
-            self.audio_enabled = False
-            self.audio_btn.setText("🎙 Start Audio")
-            self.audio_btn.setChecked(False)
+        """Start/stop audio or mute/unmute mic without tearing down playback"""
+        try:
+            # If audio hasn't started yet, start mic + receiver
+            if not self.audio_enabled:
+                success = self.audio_client.start_streaming(self.on_audio_status)
+                if success:
+                    # Start playback receiver thread once
+                    self.audio_thread = AudioStreamThread(self.audio_client)
+                    self.audio_thread.status_update.connect(self.show_notification)
+                    self.audio_thread.start()
+                    self.audio_enabled = True
+                    self.mic_muted = False
+                    self.audio_btn.setText("🎙 Mute")
+                    self.audio_btn.setChecked(True)
+                return
+
+            # Audio is running; toggle mic mute state instead of stopping everything
+            if not hasattr(self, 'mic_muted'):
+                self.mic_muted = False
+            self.mic_muted = not self.mic_muted
+            self.audio_client.set_mic_enabled(not self.mic_muted)
+            self.audio_btn.setText("🎙 Unmute" if self.mic_muted else "🎙 Mute")
+            self.audio_btn.setChecked(not self.mic_muted)
+        except Exception as e:
+            self.show_notification(f"Audio toggle error: {e}")
     
     def on_audio_status(self, message):
         """Callback for audio status updates"""
@@ -648,13 +839,27 @@ class SaporaMainWindow(QMainWindow):
         self.chat_panel.setVisible(self.chat_visible)
     
     def send_chat_message(self):
-        """Send a chat message"""
+        """Send a chat message and locally echo it"""
         text = self.chat_input.text().strip()
-        if text:
+        if not text:
+            return
+        sent = False
+        try:
+            sent = bool(self.chat_client and self.chat_client.send_message(text))
+        except Exception as e:
+            self.show_notification(f"Chat send failed: {e}")
+        finally:
+            # Local echo so user can see their own message
             try:
-                self.chat_client.send_message(text)
-            except Exception as e:
-                self.show_notification(f"Chat send failed: {e}")
+                self._on_chat_message_signal(self.username or "Me", text)
+            except Exception:
+                pass
+            if not sent:
+                # Mark failed send
+                try:
+                    self.chat_display.append('<i style="color:#f44336;">(message delivery failed)</i>')
+                except Exception:
+                    pass
             self.chat_input.clear()
     
     # ---- Signal slots (these run in GUI thread) ----
@@ -704,18 +909,35 @@ class SaporaMainWindow(QMainWindow):
             self.show_notification("File transfer already in progress.")
             return
         
+        # Track current filename for user feedback
+        try:
+            self._current_upload_name = Path(file_path).name
+        except Exception:
+            self._current_upload_name = None
+        
         self.file_thread = FileTransferThread(self.file_client, "upload", file_path)
         self.file_thread.status_update.connect(self.file_status_signal.emit)
         self.file_thread.transfer_complete.connect(self.on_file_transfer_complete)
         self.file_thread.start()
-        self.show_notification(f"📤 Uploading {Path(file_path).name}...")
+        self.show_notification(f"📤 Uploading {self._current_upload_name or file_path}...")
     
     def on_file_transfer_complete(self, success):
         """Callback when file transfer completes"""
+        fname = getattr(self, '_current_upload_name', None)
         if success:
             self.show_notification("✅ File transfer successful!")
+            try:
+                self.chat_display.append(f"<i style='color:#4CAF50;'>✅ Uploaded {fname or ''} successfully</i>")
+            except Exception:
+                pass
         else:
             self.show_notification("❌ File transfer failed")
+            try:
+                self.chat_display.append(f"<i style='color:#f44336;'>❌ Upload failed for {fname or ''}</i>")
+            except Exception:
+                pass
+        # clear current filename
+        self._current_upload_name = None
     
     def _on_file_status_signal(self, message):
         """Update UI from file client status callbacks"""
@@ -725,29 +947,49 @@ class SaporaMainWindow(QMainWindow):
     # SCREEN SHARE HANDLING
     # ========================================================================
     
+    def _on_screen_frame_signal(self, frame_bgr):
+        try:
+            if isinstance(frame_bgr, tuple) and len(frame_bgr) >= 2:
+                frame_bgr = frame_bgr[1]
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_image)
+            scaled = pixmap.scaled(
+                self.screen_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.screen_label.setPixmap(scaled)
+        except Exception:
+            pass
+    
     def toggle_screen_share(self):
         """Start/stop screen sharing"""
-        reply = QMessageBox.question(
-            self,
-            "Screen Share",
-            "Start sharing your screen?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # Start screen sharing in a separate thread to prevent blocking
-            def _start_sharing():
-                try:
-                    # ScreenShareClient may raise if pyscreeze/pillow missing; catch and emit
-                    self.screen_client.start()
-                except Exception as e:
-                    self.status_signal.emit(f"Screen share error: {e}")
-            
-            t = QThread()
-            # Run the blocking start in a Python thread (not a QThread) because ScreenShareClient likely uses blocking sockets/loops
+        # Toggle presenter start/stop
+        if not getattr(self, '_presenting', False):
+            reply = QMessageBox.question(
+                self,
+                "Screen Share",
+                "Start sharing your screen?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
             import threading
-            threading.Thread(target=_start_sharing, daemon=True).start()
+            threading.Thread(target=self.screen_presenter.start, daemon=True).start()
+            self._presenting = True
             self.show_notification("🖥 Screen sharing started")
+            self.screen_btn.setText("🛑 Stop Share")
+        else:
+            try:
+                self.screen_presenter.stop()
+            except Exception:
+                pass
+            self._presenting = False
+            self.show_notification("🛑 Screen sharing stopped")
+            self.screen_btn.setText("🖥 Share Screen")
     
     # ========================================================================
     # UI HELPERS
@@ -767,6 +1009,32 @@ class SaporaMainWindow(QMainWindow):
     def _on_status_signal(self, text):
         """Slot for handling status_signal emissions (GUI thread)"""
         self.show_notification(text)
+    
+    def _open_scheduler(self):
+        try:
+            dlg = SchedulerDialog(self, storage_path=Path(__file__).parent / 'meetings.json')
+            dlg.exec()
+        except Exception as e:
+            print(f"Scheduler open error: {e}")
+    
+    def _check_scheduled_meetings(self):
+        """Checks meetings.json and auto-launches due meetings."""
+        try:
+            storage = Path(__file__).parent / 'meetings.json'
+            if not storage.exists():
+                return
+            data = json.loads(storage.read_text(encoding='utf-8'))
+            now = datetime.now()
+            for e in data:
+                try:
+                    t = datetime.fromisoformat(e.get('time'))
+                    if 0 <= (t - now).total_seconds() <= 30:
+                        # Launch a new client for this meeting
+                        subprocess.Popen([sys.executable, str(Path(__file__).parent / 'main_ui.py'), '--meeting', e.get('meeting_id')])
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"Scheduler check error: {e}")
     
     def leave_meeting(self):
         """Leave the meeting and clean up"""
@@ -790,24 +1058,30 @@ class SaporaMainWindow(QMainWindow):
             except Exception:
                 pass
             if self.video_thread:
-                try:
-                    self.video_thread.stop()
-                    self.video_thread.wait(2000)
-                except Exception:
-                    pass
+                self.video_thread.stop()
+                self.video_thread.wait(2000)
         
-        # Stop audio
-        if self.audio_enabled:
+        # Stop screen share
+        try:
+            if getattr(self, '_presenting', False):
+                self.screen_presenter.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'screen_viewer') and self.screen_viewer:
+                self.screen_viewer.stop()
+        except Exception:
+            pass
+
+        # Stop audio (full shutdown)
+        if self.audio_enabled or getattr(self, 'mic_muted', False):
             try:
                 self.audio_client.stop_streaming()
             except Exception:
                 pass
             if self.audio_thread:
-                try:
-                    self.audio_thread.stop()
-                    self.audio_thread.wait(2000)
-                except Exception:
-                    pass
+                self.audio_thread.stop()
+                self.audio_thread.wait(2000)
         
         # Disconnect chat
         if self.chat_client:
@@ -827,10 +1101,23 @@ class SaporaMainWindow(QMainWindow):
 # ============================================================================
 
 def main():
+    # Parse optional --meeting MEETING_ID
+    meeting_cli = None
+    try:
+        if '--meeting' in sys.argv:
+            idx = sys.argv.index('--meeting')
+            if idx + 1 < len(sys.argv):
+                meeting_cli = sys.argv[idx + 1]
+    except Exception:
+        meeting_cli = None
+
     app = QApplication(sys.argv)
     app.setApplicationName("Sapora Video Conference")
     
-    window = SaporaMainWindow()
+    prefill = {}
+    if meeting_cli:
+        prefill['meeting_id'] = meeting_cli
+    window = SaporaMainWindow(prefill=prefill)
     window.show()
     
     sys.exit(app.exec())
