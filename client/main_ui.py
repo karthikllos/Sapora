@@ -769,54 +769,141 @@ class SaporaMainWindow(QMainWindow):
         return widget
     
     def create_chat_panel(self):
-        """Creates the chat side panel"""
+        """Creates the chat side panel with enhanced features"""
         panel = QFrame()
         panel.setObjectName("chatPanel")
-        panel.setMinimumWidth(300)
-        panel.setMaximumWidth(400)
+        panel.setMinimumWidth(320)
+        panel.setMaximumWidth(420)
         
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
         
-        # Header
+        # Header with connection status
+        header_layout = QHBoxLayout()
         header = QLabel("💬 Chat")
         header.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        layout.addWidget(header)
+        header_layout.addWidget(header)
+        header_layout.addStretch()
         
-        # Message display
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setObjectName("chatDisplay")
-        layout.addWidget(self.chat_display)
+        # Online indicator
+        self.chat_status_indicator = QLabel("● Online")
+        self.chat_status_indicator.setStyleSheet("color: #4CAF50; font-size: 10px; font-weight: bold;")
+        header_layout.addWidget(self.chat_status_indicator)
+        layout.addLayout(header_layout)
         
-        # Input + Target area
-        from PyQt6.QtWidgets import QComboBox
-        input_layout = QHBoxLayout()
-        self.chat_target = QComboBox()
-        self.chat_target.addItem("All")
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Type a message...")
-        self.chat_input.returnPressed.connect(self.send_chat_message)
-        
-        send_btn = QPushButton("Send")
-        send_btn.clicked.connect(self.send_chat_message)
-        
-        input_layout.addWidget(QLabel("To:"))
-        input_layout.addWidget(self.chat_target, 0)
-        input_layout.addWidget(self.chat_input, 1)
-        input_layout.addWidget(send_btn)
-        layout.addLayout(input_layout)
-        
-        # Participants list
+        # Participants list (moved to top for better visibility)
         participants_header = QLabel("👥 Participants")
         participants_header.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(participants_header)
         
         self.participants_display = QTextEdit()
         self.participants_display.setReadOnly(True)
-        self.participants_display.setMaximumHeight(100)
+        self.participants_display.setMaximumHeight(120)
         self.participants_display.setObjectName("participantsList")
+        self.participants_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #2a2a2a;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 8px;
+                color: #fff;
+                font-size: 11px;
+            }
+        """)
         layout.addWidget(self.participants_display)
+        
+        # Message display
+        chat_header = QLabel("Messages")
+        chat_header.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        layout.addWidget(chat_header)
+        
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setObjectName("chatDisplay")
+        self.chat_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                border: 1px solid #444;
+                border-radius: 5px;
+                padding: 8px;
+                color: #fff;
+            }
+        """)
+        layout.addWidget(self.chat_display)
+        
+        # Recipient selector (more prominent)
+        from PyQt6.QtWidgets import QComboBox
+        recipient_layout = QHBoxLayout()
+        recipient_label = QLabel("Send to:")
+        recipient_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.chat_target = QComboBox()
+        self.chat_target.addItem("📢 Everyone")
+        self.chat_target.setMinimumWidth(150)
+        self.chat_target.setStyleSheet("""
+            QComboBox {
+                background-color: #2a2a2a;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 5px;
+                color: #fff;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #fff;
+                margin-right: 5px;
+            }
+        """)
+        recipient_layout.addWidget(recipient_label)
+        recipient_layout.addWidget(self.chat_target, 1)
+        layout.addLayout(recipient_layout)
+        
+        # Input area with improved styling
+        input_layout = QHBoxLayout()
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("Type your message here...")
+        self.chat_input.returnPressed.connect(self.send_chat_message)
+        self.chat_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #2a2a2a;
+                border: 2px solid #555;
+                border-radius: 5px;
+                padding: 8px;
+                color: #fff;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #4CAF50;
+            }
+        """)
+        
+        send_btn = QPushButton("Send")
+        send_btn.clicked.connect(self.send_chat_message)
+        send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
+        
+        input_layout.addWidget(self.chat_input, 1)
+        input_layout.addWidget(send_btn)
+        layout.addLayout(input_layout)
         
         return panel
     
@@ -888,6 +975,17 @@ class SaporaMainWindow(QMainWindow):
             self.status_label.setText("● Connected")
             self.status_label.setStyleSheet("color: #4CAF50;")
             self.show_notification("Connected to server!")
+            
+            # Display welcome message in chat
+            welcome_msg = f"""
+            <div style='margin: 10px 0; padding: 12px; background-color: #1a1a1a; border-radius: 8px; border: 2px solid #4CAF50; text-align: center;'>
+                <span style='color: #4CAF50; font-size: 14px; font-weight: bold;'>🎉 Welcome to Sapora! 🎉</span><br/>
+                <span style='color: #aaa; font-size: 11px;'>Connected as <b style='color: #4CAF50;'>{self.username}</b></span><br/>
+                <span style='color: #aaa; font-size: 11px;'>Room: <b style='color: #2196F3;'>{self.meeting_id}</b></span><br/>
+                <span style='color: #888; font-size: 10px; font-style: italic;'>Use the dropdown above to send private messages</span>
+            </div>
+            """
+            self.chat_display.append(welcome_msg)
         else:
             self.status_label.setText("● Connection Failed")
             self.status_label.setStyleSheet("color: #f44336;")
@@ -1013,51 +1111,129 @@ class SaporaMainWindow(QMainWindow):
         self.chat_panel.setVisible(self.chat_visible)
     
     def send_chat_message(self):
-        """Send a chat message and locally echo it"""
+        """Send a chat message with enhanced formatting and error handling"""
         text = self.chat_input.text().strip()
         if not text:
             return
+        
+        # Clear input immediately for better UX
+        self.chat_input.clear()
+        
         sent = False
+        target = 'all'
+        target_display = 'Everyone'
+        
         try:
-            target = 'all'
-            try:
-                if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
-                    val = self.chat_target.currentText().strip()
-                    if val and val.lower() != 'all':
-                        target = val
-            except Exception:
-                pass
-            sent = bool(self.chat_client and self.chat_client.send_message(text, target=target))
-        except Exception as e:
-            self.show_notification(f"Chat send failed: {e}")
-        finally:
-            # Local echo so user can see their own message
-            try:
-                local_text = text
-                if target and target.lower() != 'all':
-                    local_text = f"(to {target}) {text}"
-                self._on_chat_message_signal(self.username or "Me", local_text)
-            except Exception:
-                pass
+            # Get target from dropdown
+            if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
+                val = self.chat_target.currentText().strip()
+                # Remove emoji prefix if present
+                val_clean = val.replace('📢', '').replace('👤', '').strip()
+                
+                if val_clean and val_clean.lower() not in ['all', 'everyone']:
+                    target = val_clean
+                    target_display = val_clean
+            
+            # Send message via chat client
+            if self.chat_client:
+                sent = self.chat_client.send_message(text, target=target)
+            
+            # Local echo with enhanced formatting
+            timestamp = datetime.now().strftime("%H:%M")
+            
+            if target.lower() == 'all':
+                # Public message
+                formatted_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #4CAF50;'>
+                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                    <span style='color: #4CAF50; font-weight: bold;'> You </span>
+                    <span style='color: #aaa;'>→ Everyone</span><br/>
+                    <span style='color: #fff;'>{text}</span>
+                </div>
+                """
+            else:
+                # Private message
+                formatted_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #FF9800;'>
+                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                    <span style='color: #4CAF50; font-weight: bold;'> You </span>
+                    <span style='color: #FF9800;'>→ {target_display} (private)</span><br/>
+                    <span style='color: #fff;'>{text}</span>
+                </div>
+                """
+            
+            self.chat_display.append(formatted_msg)
+            
             if not sent:
                 # Mark failed send
-                try:
-                    self.chat_display.append('<i style="color:#f44336;">(message delivery failed)</i>')
-                except Exception:
-                    pass
-            self.chat_input.clear()
+                self.chat_display.append(
+                    '<div style="color:#f44336; font-style: italic; font-size: 11px; margin-left: 10px;">⚠ Message delivery failed</div>'
+                )
+                self.show_notification("❌ Failed to send message")
+            
+        except Exception as e:
+            self.chat_display.append(
+                f'<div style="color:#f44336; font-style: italic; font-size: 11px; margin-left: 10px;">⚠ Error: {str(e)}</div>'
+            )
+            self.show_notification(f"Chat error: {e}")
     
     # ---- Signal slots (these run in GUI thread) ----
     def _on_chat_message_signal(self, sender, message):
-        """Thread-safe slot for appending chat messages to UI"""
+        """Thread-safe slot for appending incoming chat messages with enhanced formatting"""
         try:
-            formatted = f"<b>{sender}:</b> {message}"
-            self.chat_display.append(formatted)
-        except Exception:
-            pass
+            timestamp = datetime.now().strftime("%H:%M")
+            
+            # Check if it's a private message
+            is_private = '(to ' in message or message.startswith('(private)')
+            
+            # Check if it's a system message
+            is_system = sender in ['SYSTEM', 'System', 'SERVER']
+            
+            if is_system:
+                # System message (gold border)
+                formatted_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #FFC107;'>
+                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                    <span style='color: #FFC107; font-weight: bold;'> {sender} </span><br/>
+                    <span style='color: #fff; font-style: italic;'>{message}</span>
+                </div>
+                """
+            elif is_private:
+                # Private message (orange border)
+                formatted_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #FF9800;'>
+                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                    <span style='color: #2196F3; font-weight: bold;'> {sender} </span>
+                    <span style='color: #FF9800;'>(private)</span><br/>
+                    <span style='color: #fff;'>{message}</span>
+                </div>
+                """
+            else:
+                # Public message (blue border)
+                formatted_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #2196F3;'>
+                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                    <span style='color: #2196F3; font-weight: bold;'> {sender} </span><br/>
+                    <span style='color: #fff;'>{message}</span>
+                </div>
+                """
+            
+            self.chat_display.append(formatted_msg)
+            
+            # Auto-scroll to bottom
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.chat_display.setTextCursor(cursor)
+            
+        except Exception as e:
+            # Fallback to simple display
+            try:
+                self.chat_display.append(f"<b>{sender}:</b> {message}")
+            except:
+                pass
     
     def _on_user_list_signal(self, users):
-        """Thread-safe slot for updating participants list"""
+        """Thread-safe slot for updating participants list with enhanced formatting"""
         try:
             # Store user list for IP mapping
             self.user_list_data = users
@@ -1070,29 +1246,64 @@ class SaporaMainWindow(QMainWindow):
                     usernames.append(u.get('username') or u.get('name') or str(u))
                 else:
                     usernames.append(str(u))
-            # update chat target dropdown (keep 'All' at index 0)
-            current = self.chat_target.currentText() if hasattr(self, 'chat_target') else 'All'
+            
+            # Update chat target dropdown with enhanced styling
+            current = self.chat_target.currentText() if hasattr(self, 'chat_target') else '📢 Everyone'
             if hasattr(self, 'chat_target'):
                 self.chat_target.blockSignals(True)
                 self.chat_target.clear()
-                self.chat_target.addItem("All")
-                for name in usernames:
+                
+                # Add "Everyone" option with emoji
+                self.chat_target.addItem("📢 Everyone")
+                
+                # Add individual participants with emoji (excluding self)
+                for name in sorted(usernames):
                     if name and name != (self.username or ""):
-                        self.chat_target.addItem(name)
-                # restore selection if possible
-                idx = self.chat_target.findText(current)
-                self.chat_target.setCurrentIndex(idx if idx >= 0 else 0)
+                        self.chat_target.addItem(f"👤 {name}")
+                
+                # Restore previous selection if possible
+                # Clean up current selection for matching
+                current_clean = current.replace('📢', '').replace('👤', '').strip()
+                found_idx = -1
+                for i in range(self.chat_target.count()):
+                    item_text = self.chat_target.itemText(i)
+                    item_clean = item_text.replace('📢', '').replace('👤', '').strip()
+                    if item_clean.lower() == current_clean.lower():
+                        found_idx = i
+                        break
+                
+                self.chat_target.setCurrentIndex(found_idx if found_idx >= 0 else 0)
                 self.chat_target.blockSignals(False)
-            # show list in panel
-            user_text = "\n".join(f"• {name}" for name in usernames)
-            self.participants_display.setText(user_text)
+            
+            # Update participants display with online status and count
+            participant_count = len(usernames)
+            participants_html = f"<div style='color: #4CAF50; font-weight: bold; margin-bottom: 5px;'>● {participant_count} Online</div>"
+            
+            for name in sorted(usernames):
+                is_you = (name == self.username)
+                if is_you:
+                    participants_html += f"<div style='color: #4CAF50; margin: 3px 0;'>● {name} <b>(You)</b></div>"
+                else:
+                    participants_html += f"<div style='color: #2196F3; margin: 3px 0;'>● {name}</div>"
+            
+            self.participants_display.setHtml(participants_html)
+            
+            # Update online status indicator
+            if hasattr(self, 'chat_status_indicator'):
+                if participant_count > 1:
+                    self.chat_status_indicator.setText(f"● {participant_count} online")
+                    self.chat_status_indicator.setStyleSheet("color: #4CAF50; font-size: 10px; font-weight: bold;")
+                else:
+                    self.chat_status_indicator.setText("● Waiting...")
+                    self.chat_status_indicator.setStyleSheet("color: #FFC107; font-size: 10px; font-weight: bold;")
             
             # Update usernames in existing video tiles
             for source_id, tile in self.video_tiles.items():
                 if source_id != 'local' and source_id in self.ip_to_username:
                     tile.update_username(self.ip_to_username[source_id])
-        except Exception:
-            pass
+                    
+        except Exception as e:
+            print(f"Error updating user list: {e}")
     
     # Legacy - kept for API compatibility (used by earlier code)
     def on_chat_message(self, sender, message):
