@@ -38,8 +38,8 @@ class AudioClient:
         self.stream_out = None
         self.stream_in = None
         
-        self.send_sock = None
-        self.recv_sock = None
+        # FIX: Use single socket for both send and receive
+        self.sock = None
         
         self.send_thread = None
         self.recv_thread = None
@@ -65,10 +65,15 @@ class AudioClient:
                 frames_per_buffer=AUDIO_CHUNK
             )
             
-            # Sender socket
-            self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
-            self.send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # FIX: Single socket for both send and receive
+            # Bind to ephemeral port so we can receive on same socket
+            if not self.sock:
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.sock.bind(('', 0))  # Bind to ephemeral port
+                self.sock.settimeout(CONNECTION_TIMEOUT)
 
             self.running = True
             self.send_thread = threading.Thread(target=self._send_loop, daemon=True)
@@ -102,7 +107,8 @@ class AudioClient:
                 if audio_data and self.mic_enabled:
                     packet = pack_message(STREAM_AUDIO, audio_data)
                     try:
-                        self.send_sock.sendto(packet, (self.server_ip, self.server_port))
+                        # FIX: Use single socket
+                        self.sock.sendto(packet, (self.server_ip, self.server_port))
                     except Exception:
                         # Ignore transient send errors
                         pass
@@ -134,12 +140,15 @@ class AudioClient:
                 frames_per_buffer=AUDIO_CHUNK
             )
             
-            self.recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
-            self.recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # bind to ephemeral port so server can send to us
-            self.recv_sock.bind(('', 0))
-            self.recv_sock.settimeout(CONNECTION_TIMEOUT)
+            # FIX: Use single socket (create if not already created by start_streaming)
+            if not self.sock:
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # bind to ephemeral port so server can send to us
+                self.sock.bind(('', 0))
+                self.sock.settimeout(CONNECTION_TIMEOUT)
             
             self.running = True
             self._register_receiver()
@@ -154,7 +163,8 @@ class AudioClient:
         register_packet = pack_message(CMD_REGISTER, b"AUDIO")
         for _ in range(3):
             try:
-                self.recv_sock.sendto(register_packet, (self.server_ip, self.server_port))
+                # FIX: Use single socket - this ensures server knows our receive address
+                self.sock.sendto(register_packet, (self.server_ip, self.server_port))
             except Exception as e:
                 print(f"AudioClient Registration Error: {e}")
             time.sleep(0.05)
@@ -163,7 +173,8 @@ class AudioClient:
         """Continuously receives mixed audio and plays it back."""
         while self.running:
             try:
-                data, addr = self.recv_sock.recvfrom(UDP_STREAM_BUFFER)
+                # FIX: Use single socket
+                data, addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
             except socket.timeout:
                 continue
             except Exception as e:
@@ -196,21 +207,13 @@ class AudioClient:
         """Cleans up all audio resources and closes sockets."""
         self.running = False
         
-        # Close send socket
-        if self.send_sock:
+        # Close socket (single socket for both send and receive)
+        if self.sock:
             try:
-                self.send_sock.close()
+                self.sock.close()
             except:
                 pass
-            self.send_sock = None
-
-        # Close recv socket
-        if self.recv_sock:
-            try:
-                self.recv_sock.close()
-            except:
-                pass
-            self.recv_sock = None
+            self.sock = None
 
         # Close streams
         if self.stream_in:

@@ -30,8 +30,7 @@ class VideoClient:
         
         self.running = False
         self.cap = None
-        self.send_sock = None
-        self.recv_sock = None
+        self.sock = None  # Single socket for both send and receive
         
         self.last_frame = None # Frame captured by self for local display
 
@@ -55,8 +54,15 @@ class VideoClient:
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT)
             self.cap.set(cv2.CAP_PROP_FPS, VIDEO_FPS)
             
-            # 2. Initialize sending socket
-            self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # 2. Initialize socket (single for both send and receive)
+            if not self.sock:
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # Bind to ephemeral port for receiving
+                self.sock.bind(('', 0))
+                self.sock.settimeout(CONNECTION_TIMEOUT)
             
             self.running = True
             threading.Thread(target=self._send_loop, daemon=True).start()
@@ -85,9 +91,9 @@ class VideoClient:
                 # Encode frame to JPEG
                 jpeg_bytes = encode_frame_to_jpeg(frame)
                 
-                # Pack and send
+                # Pack and send using single socket
                 packet = pack_message(STREAM_VIDEO, jpeg_bytes)
-                self.send_sock.sendto(packet, (self.server_ip, self.server_port))
+                self.sock.sendto(packet, (self.server_ip, self.server_port))
                 
                 # Control frame rate
                 elapsed = time.time() - start_time
@@ -104,12 +110,15 @@ class VideoClient:
     
     def start_receiving(self):
         """Starts the receiver thread and registers with the server."""
-        self.recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
-        self.recv_sock.settimeout(CONNECTION_TIMEOUT)
-        
-        # Bind to any available port to receive broadcasts
-        self.recv_sock.bind(('', 0))
+        # Create socket if not already created by start_streaming
+        if not self.sock:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_STREAM_BUFFER)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UDP_STREAM_BUFFER)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Bind to ephemeral port to receive broadcasts
+            self.sock.bind(('', 0))
+            self.sock.settimeout(CONNECTION_TIMEOUT)
         
         self.running = True
         self._register_receiver()
@@ -122,7 +131,7 @@ class VideoClient:
         register_packet = pack_message(CMD_REGISTER, b"VIDEO") 
         for _ in range(3): # Send a few times for reliability
             try:
-                self.recv_sock.sendto(register_packet, (self.server_ip, self.server_port))
+                self.sock.sendto(register_packet, (self.server_ip, self.server_port))
                 time.sleep(0.1)
             except Exception as e:
                 print(f"VideoClient Registration Error: {e}")
@@ -131,7 +140,7 @@ class VideoClient:
         """Continuously receives and processes video frames."""
         while self.running:
             try:
-                data, addr = self.recv_sock.recvfrom(UDP_STREAM_BUFFER)
+                data, addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
                 
                 # Unpack and decode
                 version, msg_type, _, _, payload = unpack_message(data)
@@ -165,16 +174,9 @@ class VideoClient:
                 pass
             self.cap = None
             
-        if self.send_sock:
+        if self.sock:
             try:
-                self.send_sock.close()
+                self.sock.close()
             except:
                 pass
-            self.send_sock = None
-        
-        if self.recv_sock:
-             try:
-                 self.recv_sock.close()
-             except:
-                 pass
-             self.recv_sock = None
+            self.sock = None

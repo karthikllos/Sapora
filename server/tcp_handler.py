@@ -118,7 +118,10 @@ class TCPHandler(threading.Thread):
 
             if self.server:
                 with self.server.rooms_lock:
-                    room = self.server.rooms.get(self.meeting_id, {'clients': [], 'participants': {}})
+                    room = self.server.rooms.get(self.meeting_id)
+                    if not room:
+                        print(f"[ROOM: {self.meeting_id}] Room not found, skipping chat broadcast")
+                        return
                     participants = room.get('participants', {})
 
                     # Determine targets
@@ -138,7 +141,8 @@ class TCPHandler(threading.Thread):
                 try:
                     if client_sock:
                         client_sock.sendall(chat_packet)
-                except Exception:
+                except Exception as e:
+                    print(f"[TCPHandler] Failed to send to client: {e}")
                     self.manager.remove_client(client_sock)
         except Exception as e:
             print(f"[TCPHandler] Chat Broadcast Error: {e}")

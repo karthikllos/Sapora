@@ -138,11 +138,12 @@ class UDPAudioServer(threading.Thread):
                 except Exception:
                     target_room = 'default'
 
-                # Filter chunks to only include sources in the same room
+                # Filter chunks to only include sources in the same room (excluding self)
+                target_key = tuple(target)
                 sources_for_mix = []
                 for (addr, chunk) in chunks_to_mix:
                     try:
-                        if tuple(addr) == tuple(target):
+                        if tuple(addr) == target_key:
                             continue  # exclude self audio
                         src_room = self.manager.get_room_by_ip(addr[0])
                         if src_room == target_room:
@@ -151,13 +152,7 @@ class UDPAudioServer(threading.Thread):
                         continue
 
                 if not sources_for_mix:
-                    continue
-                # target may be stored in manager as (ip,port) or similar; ensure tuple
-                target_key = tuple(target)
-                # Gather sources excluding the target IP:port
-                sources_for_mix = [chunk for (addr, chunk) in chunks_to_mix if tuple(addr) != target_key]
-                if not sources_for_mix:
-                    # Nothing to mix for this target (only self audio) — optionally send silence or skip
+                    # Nothing to mix for this target (only self audio or no audio) — skip
                     continue
 
                 try:
