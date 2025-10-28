@@ -64,7 +64,8 @@ class LANDiscoveryServer:
                 
                 try:
                     message = json.dumps(discovery_packet).encode('utf-8')
-                    sock.sendto(message, ('<broadcast>', DISCOVERY_PORT))
+                    # Use explicit broadcast address for better Windows compatibility
+                    sock.sendto(message, ('255.255.255.255', DISCOVERY_PORT))
                 except Exception as e:
                     print(f"[Discovery] Broadcast error: {e}")
                 
@@ -141,6 +142,10 @@ class LANDiscoveryClient:
         """Listen for server broadcast packets"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except Exception:
+            pass
         
         try:
             sock.bind(('', DISCOVERY_PORT))
@@ -153,6 +158,9 @@ class LANDiscoveryClient:
                     
                     if packet.get('type') == 'sapora_discovery':
                         server_ip = packet.get('ip', addr[0])
+                        # If server advertised loopback, prefer source address
+                        if str(server_ip).startswith('127.'):
+                            server_ip = addr[0]
                         
                         server_info = {
                             'name': packet.get('server_name', 'Unknown Server'),

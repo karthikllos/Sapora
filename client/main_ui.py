@@ -432,6 +432,10 @@ class SaporaMainWindow(QMainWindow):
             user_list_cb=self.user_list_signal.emit,
             message_cb=self.chat_message_signal.emit
         )
+        try:
+            self.chat_client.set_file_callback(self._on_file_announce)
+        except Exception:
+            pass
         
         # File Transfer Client: use file_status_signal for status updates
         self.file_client = FileTransferClient(
@@ -602,8 +606,11 @@ class SaporaMainWindow(QMainWindow):
         self.chat_display.setObjectName("chatDisplay")
         layout.addWidget(self.chat_display)
         
-        # Input area
+        # Input + Target area
+        from PyQt6.QtWidgets import QComboBox
         input_layout = QHBoxLayout()
+        self.chat_target = QComboBox()
+        self.chat_target.addItem("All")
         self.chat_input = QLineEdit()
         self.chat_input.setPlaceholderText("Type a message...")
         self.chat_input.returnPressed.connect(self.send_chat_message)
@@ -611,7 +618,9 @@ class SaporaMainWindow(QMainWindow):
         send_btn = QPushButton("Send")
         send_btn.clicked.connect(self.send_chat_message)
         
-        input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(QLabel("To:"))
+        input_layout.addWidget(self.chat_target, 0)
+        input_layout.addWidget(self.chat_input, 1)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
         
@@ -845,7 +854,15 @@ class SaporaMainWindow(QMainWindow):
             return
         sent = False
         try:
-            sent = bool(self.chat_client and self.chat_client.send_message(text))
+            target = 'all'
+            try:
+                if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
+                    val = self.chat_target.currentText().strip()
+                    if val and val.lower() != 'all':
+                        target = val
+            except Exception:
+                pass
+            sent = bool(self.chat_client and self.chat_client.send_message(text, target=target))
         except Exception as e:
             self.show_notification(f"Chat send failed: {e}")
         finally:
@@ -874,7 +891,28 @@ class SaporaMainWindow(QMainWindow):
     def _on_user_list_signal(self, users):
         """Thread-safe slot for updating participants list"""
         try:
-            user_text = "\n".join(f"• {user}" for user in users)
+            # users may be a list of dicts or usernames; normalize to usernames
+            usernames = []
+            for u in users:
+                if isinstance(u, dict):
+                    usernames.append(u.get('username') or u.get('name') or str(u))
+                else:
+                    usernames.append(str(u))
+            # update chat target dropdown (keep 'All' at index 0)
+            current = self.chat_target.currentText() if hasattr(self, 'chat_target') else 'All'
+            if hasattr(self, 'chat_target'):
+                self.chat_target.blockSignals(True)
+                self.chat_target.clear()
+                self.chat_target.addItem("All")
+                for name in usernames:
+                    if name and name != (self.username or ""):
+                        self.chat_target.addItem(name)
+                # restore selection if possible
+                idx = self.chat_target.findText(current)
+                self.chat_target.setCurrentIndex(idx if idx >= 0 else 0)
+                self.chat_target.blockSignals(False)
+            # show list in panel
+            user_text = "\n".join(f"• {name}" for name in usernames)
             self.participants_display.setText(user_text)
         except Exception:
             pass
@@ -930,6 +968,18 @@ class SaporaMainWindow(QMainWindow):
                 self.chat_display.append(f"<i style='color:#4CAF50;'>✅ Uploaded {fname or ''} successfully</i>")
             except Exception:
                 pass
+            # Announce file to target (or All)
+            try:
+                target = 'all'
+                if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
+                    val = self.chat_target.currentText().strip()
+                    if val and val.lower() != 'all':
+                        target = val
+                # Send announce (routed via chat); receivers auto-download
+                if hasattr(self, 'chat_client') and self.chat_client:
+                    self.chat_client.send_file_announce(fname or '', target=target)
+            except Exception:
+                pass
         else:
             self.show_notification("❌ File transfer failed")
             try:
@@ -942,6 +992,34 @@ class SaporaMainWindow(QMainWindow):
     def _on_file_status_signal(self, message):
         """Update UI from file client status callbacks"""
         self.show_notification(message)
+    
+    def _on_file_announce(self, obj):
+        try:
+            fname = obj.get('filename')
+            sender = obj.get('sender', 'someone')
+            size = obj.get('size')
+            self.chat_display.append(f"<i>📥 {sender} shared {fname} ({size or ''} bytes)</i>")
+            # Auto-download to downloads folder
+            downloads = (Path(__file__).parent / 'downloads')
+            downloads.mkdir(parents=True, exist_ok=True)
+            self.file_thread = FileTransferThread(self.file_client, 'download', fname, save_path=str(downloads))
+            self.file_thread.status_update.connect(self.file_status_signal.emit)
+            def _after(ok):
+                try:
+                    self.chat_display.append(
+                        f"<i style='color:{'#4CAF50' if ok else '#f44336'};'>{'✅ Downloaded' if ok else '❌ Download failed'} {fname}</i>")
+                except Exception:
+                    pass
+                # Send private ack back to sender when known
+                if ok and sender and hasattr(self, 'chat_client') and self.chat_client:
+                    try:
+                        self.chat_client.send_message(f"Downloaded {fname}", target=sender)
+                    except Exception:
+                        pass
+            self.file_thread.transfer_complete.connect(_after)
+            self.file_thread.start()
+        except Exception as e:
+            self.show_notification(f"File announce error: {e}")
     
     # ========================================================================
     # SCREEN SHARE HANDLING

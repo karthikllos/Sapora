@@ -193,6 +193,7 @@ class FileHandler(threading.Thread):
 
             print(f"[FileHandler] Successfully uploaded {filename} ({bytes_received} bytes).")
             self._safe_send(pack_message(FILE_ACK_SUCCESS, b"Upload successful"))
+            # Client-side chat announce will notify recipients and trigger download.
 
         except Exception as e:
             print(f"[FileHandler] Upload failed for {filename}: {e}")

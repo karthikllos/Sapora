@@ -13,7 +13,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.constants import CONTROL_PORT, SOCKET_TIMEOUT
 from shared.protocol import CMD_REGISTER, CMD_HEARTBEAT, CMD_DISCONNECT, MSG_CHAT
-from server.utils import read_tcp_message, unpack_message, pack_message, get_message_type_name
+from server.utils import read_tcp_message, unpack_message, pack_message, get_message_type_name, broadcast_room_user_list
 
 
 class TCPHandler(threading.Thread):
@@ -78,46 +78,57 @@ class TCPHandler(threading.Thread):
             # Join room in server rooms map
             if self.server:
                 with self.server.rooms_lock:
-                    room = self.server.rooms.setdefault(self.meeting_id, {'clients': [], 'metadata': {}})
+                    room = self.server.rooms.setdefault(self.meeting_id, {'clients': [], 'participants': {}, 'metadata': {}})
                     if self.sock not in room['clients']:
                         room['clients'].append(self.sock)
+                    room['participants'][self.username] = self.sock
                     self.server.client_rooms[self.sock] = self.meeting_id
+                # notify room members
+                broadcast_room_user_list(self.server, self.meeting_id)
         except Exception as e:
             print(f"[TCPHandler] Registration Error: {e}")
 
     def _handle_chat(self, payload):
-        """Broadcasts chat message to all clients in the same room."""
+        """Broadcasts/unicasts chat message within the same room based on target."""
         try:
-            msg = payload.decode('utf-8', errors='ignore')
-            print(f"[Chat][{self.meeting_id}] {self.username}: {msg}")
-            chat_packet = pack_message(MSG_CHAT, payload)
+            raw = payload.decode('utf-8', errors='ignore')
+            target_username = None
+            try:
+                obj = json.loads(raw)
+                text = obj.get('text', '')
+                target_username = obj.get('target')
+                sender_name = obj.get('sender', self.username)
+                msg_for_wire = f"{sender_name}: {text}".encode('utf-8')
+                chat_packet = pack_message(MSG_CHAT, msg_for_wire)
+            except Exception:
+                # legacy mode: relay as-is to room
+                text = raw
+                chat_packet = pack_message(MSG_CHAT, payload)
 
-            targets = []
             if self.server:
                 with self.server.rooms_lock:
-                    room = self.server.rooms.get(self.meeting_id, {'clients': []})
-                    targets = [s for s in room['clients'] if s != self.sock]
+                    room = self.server.rooms.get(self.meeting_id, {'clients': [], 'participants': {}})
+                    participants = room.get('participants', {})
+
+                    # Determine targets
+                    if target_username and target_username.lower() != 'all':
+                        target_sock = participants.get(target_username)
+                        targets = [target_sock] if target_sock else []
+                        print(f"[ROOM: {self.meeting_id}] Relayed chat from {self.username} → {target_username}")
+                    else:
+                        targets = [s for s in room['clients'] if s and s != self.sock]
+                        print(f"[ROOM: {self.meeting_id}] Broadcast chat from {self.username} ({len(targets)} recipients)")
             else:
                 with self.manager.control_clients_lock:
                     targets = [s for s in self.manager.control_clients.keys() if s != self.sock]
 
-            disconnected = []
-            for client_sock in targets:
+            # Send
+            for client_sock in list(targets):
                 try:
-                    client_sock.sendall(chat_packet)
+                    if client_sock:
+                        client_sock.sendall(chat_packet)
                 except Exception:
-                    disconnected.append(client_sock)
-
-            for sock in disconnected:
-                self.manager.remove_client(sock)
-                if self.server:
-                    try:
-                        room = self.server.rooms.get(self.meeting_id)
-                        if room and sock in room['clients']:
-                            room['clients'].remove(sock)
-                    except:
-                        pass
-
+                    self.manager.remove_client(client_sock)
         except Exception as e:
             print(f"[TCPHandler] Chat Broadcast Error: {e}")
 
@@ -136,6 +147,16 @@ class TCPHandler(threading.Thread):
                     room = self.server.rooms[room_id]
                     if self.sock in room['clients']:
                         room['clients'].remove(self.sock)
+                    # remove from participants mapping
+                    try:
+                        for uname, s in list(room.get('participants', {}).items()):
+                            if s == self.sock:
+                                del room['participants'][uname]
+                                break
+                    except Exception:
+                        pass
+                    # broadcast updated list
+                    broadcast_room_user_list(self.server, room_id)
                     # delete empty room
                     if not room['clients']:
                         del self.server.rooms[room_id]

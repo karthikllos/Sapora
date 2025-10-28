@@ -34,11 +34,18 @@ class ChatClient:
 
         # Lock for thread-safe send
         self.send_lock = threading.Lock()
+        
+        # File notification callback
+        self.file_callback = None
 
     def set_callbacks(self, user_list_cb, message_cb):
         """Sets callbacks for user list and message updates."""
         self.user_list_callback = user_list_cb
         self.message_callback = message_cb
+    
+    def set_file_callback(self, file_cb):
+        """Set callback for file availability notifications"""
+        self.file_callback = file_cb
 
     def connect(self):
         """Establishes TCP connection and registers with the server."""
@@ -61,14 +68,23 @@ class ChatClient:
             self.disconnect()
             return False
 
-    def send_message(self, text):
-        """Sends a formatted chat message."""
+    def send_message(self, text, target: str = 'all'):
+        """Sends a chat message; supports target ('all' or username')."""
         if not self.running or not self.sock:
             return False
 
         try:
-            formatted = f"{self.username}: {text}"
-            packet = pack_message(MSG_CHAT, formatted.encode('utf-8'))
+            try:
+                payload_obj = {
+                    'sender': self.username,
+                    'target': target or 'all',
+                    'text': text,
+                    'meeting_id': getattr(self, 'meeting_id', None)
+                }
+                payload = json.dumps(payload_obj).encode('utf-8')
+            except Exception:
+                payload = f"{self.username}: {text}".encode('utf-8')
+            packet = pack_message(MSG_CHAT, payload)
             with self.send_lock:
                 self.sock.sendall(packet)
             return True
@@ -98,6 +114,14 @@ class ChatClient:
                     print("[ChatClient] Server requested disconnect.")
                     break
                 else:
+                    # Try file notify compatibility
+                    try:
+                        from shared.protocol import FILE_NOTIFY_AVAILABLE
+                        if msg_type == FILE_NOTIFY_AVAILABLE:
+                            self._handle_file_notify(payload)
+                            continue
+                    except Exception:
+                        pass
                     print(f"[ChatClient] Unknown message type: {msg_type}")
 
             except (ConnectionResetError, OSError):
@@ -111,12 +135,50 @@ class ChatClient:
     def _handle_chat(self, payload):
         """Handles an incoming chat message."""
         try:
-            msg = payload.decode('utf-8', errors='ignore')
-            sender, text = (msg.split(':', 1) + [""])[:2] if ':' in msg else ("SYSTEM", msg)
+            raw = payload.decode('utf-8', errors='ignore')
+            try:
+                obj = json.loads(raw)
+                if obj.get('type') == 'file_announce':
+                    # Invoke file callback
+                    if self.file_callback:
+                        self.file_callback(obj)
+                    return
+                sender = obj.get('sender', 'SYSTEM')
+                text = obj.get('text', raw)
+            except Exception:
+                msg = raw
+                sender, text = (msg.split(':', 1) + [""])[:2] if ':' in msg else ("SYSTEM", msg)
             if self.message_callback:
                 self.message_callback(sender.strip(), text.strip())
         except Exception as e:
             print(f"[ChatClient] Chat Decode Error: {e}")
+    
+    def _handle_file_notify(self, payload):
+        try:
+            raw = payload.decode('utf-8', errors='ignore')
+            obj = json.loads(raw)
+            if self.file_callback:
+                self.file_callback(obj)
+        except Exception as e:
+            print(f"[ChatClient] File notify decode error: {e}")
+    
+    def send_file_announce(self, filename, target: str = 'all'):
+        try:
+            obj = {
+                'type': 'file_announce',
+                'filename': filename,
+                'sender': self.username,
+                'target': target or 'all',
+                'meeting_id': getattr(self, 'meeting_id', None)
+            }
+            payload = json.dumps(obj).encode('utf-8')
+            packet = pack_message(MSG_CHAT, payload)
+            with self.send_lock:
+                self.sock.sendall(packet)
+            return True
+        except Exception as e:
+            print(f"[ChatClient] File announce send error: {e}")
+            return False
 
     def _handle_user_list(self, payload):
         """Handles updated user list from the server."""
