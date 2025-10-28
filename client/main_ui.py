@@ -1,7 +1,7 @@
 """
 Sapora LAN Collaboration Suite - Main PyQt6 GUI
 Modern Zoom-like interface integrating video, audio, chat, file transfer, and screen sharing.
-(Modified: thread-safe signals for cross-thread UI updates)
+(Modified: thread-safe signals for cross-thread UI updates + Multi-tile video grid)
 """
 
 import sys
@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QTextEdit, QStackedWidget,
     QFileDialog, QMessageBox, QScrollArea, QFrame, QDialog,
-    QDialogButtonBox, QSizePolicy
+    QDialogButtonBox, QSizePolicy, QGridLayout
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QObject
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
@@ -21,7 +21,8 @@ import numpy as np
 import json
 import subprocess
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
+import math
 
 # Import client modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -315,6 +316,99 @@ class SchedulerDialog(QDialog):
         self.time.setText(e.get('time',''))
 
 
+# ============================================================================
+# VIDEO TILE WIDGET FOR MULTI-PARTICIPANT GRID
+# ============================================================================
+
+class VideoTileWidget(QWidget):
+    """Individual video tile showing a participant's video feed and username"""
+    
+    def __init__(self, username="Unknown", is_local=False, parent=None):
+        super().__init__(parent)
+        self.username = username
+        self.is_local = is_local
+        self.last_frame = None
+        
+        # Setup UI
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # Video display label
+        self.video_label = QLabel()
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(160, 120)
+        self.video_label.setScaledContents(False)
+        self.video_label.setStyleSheet("""
+            background-color: #1a1a1a; 
+            border: 2px solid #333;
+            border-radius: 8px;
+        """)
+        self.video_label.setText("📹\n\nNo Video")
+        layout.addWidget(self.video_label)
+        
+        # Username label
+        self.username_label = QLabel(username)
+        self.username_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.username_label.setStyleSheet("""
+            background-color: rgba(0, 0, 0, 180);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        if is_local:
+            self.username_label.setText(f"{username} (You)")
+            self.video_label.setStyleSheet("""
+                background-color: #1a1a1a; 
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+            """)
+        layout.addWidget(self.username_label)
+        
+        self.setMinimumSize(180, 160)
+    
+    def update_frame(self, frame):
+        """Update the video frame displayed in this tile"""
+        if frame is None:
+            return
+        
+        try:
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            
+            # Create QImage
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_image)
+            
+            # Scale to fit label while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                self.video_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            self.video_label.setPixmap(scaled_pixmap)
+            self.last_frame = frame
+        except Exception as e:
+            pass
+    
+    def update_username(self, username):
+        """Update the displayed username"""
+        self.username = username
+        display_name = f"{username} (You)" if self.is_local else username
+        self.username_label.setText(display_name)
+    
+    def clear_video(self):
+        """Clear the video display"""
+        self.video_label.clear()
+        self.video_label.setText("📹\n\nNo Video")
+        self.last_frame = None
+
+
 class SaporaMainWindow(QMainWindow):
     """Main application window with Zoom-like interface"""
     
@@ -354,6 +448,13 @@ class SaporaMainWindow(QMainWindow):
         self.video_enabled = False
         self.audio_enabled = False
         self.chat_visible = False
+        
+        # Multi-tile video grid state
+        self.video_tiles: Dict[str, VideoTileWidget] = {}  # key: source_id (IP or 'local')
+        self.video_grid_layout = None
+        self.video_grid_container = None
+        self.ip_to_username: Dict[str, str] = {}  # Map IP addresses to usernames
+        self.user_list_data = []  # Store user list for IP mapping
         
         # Frame storage for display
         self.current_frame = None
@@ -546,24 +647,106 @@ class SaporaMainWindow(QMainWindow):
         return bar
     
     def create_video_area(self):
-        """Creates the central video display area"""
+        """Creates the central video display area with multi-tile grid"""
         widget = QFrame()
         widget.setObjectName("videoArea")
         
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # Main video label
-        self.video_label = QLabel()
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
-        self.video_label.setScaledContents(False)
-        self.video_label.setStyleSheet("background-color: #1a1a1a; border-radius: 10px;")
-        self.video_label.setText("📹\n\nNo Video Feed\n\nClick 'Start Video' to begin")
+        # Container for grid layout with scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet("background-color: #1a1a1a; border: none;")
         
-        layout.addWidget(self.video_label)
+        # Grid container widget
+        self.video_grid_container = QWidget()
+        self.video_grid_layout = QGridLayout(self.video_grid_container)
+        self.video_grid_layout.setSpacing(10)
+        self.video_grid_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Add placeholder message
+        placeholder = QLabel("📹\n\nNo Video Feed\n\nClick 'Start Video' to begin")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setStyleSheet("color: #888; font-size: 16px;")
+        placeholder.setMinimumSize(640, 480)
+        self.video_grid_layout.addWidget(placeholder, 0, 0)
+        
+        scroll.setWidget(self.video_grid_container)
+        layout.addWidget(scroll)
         
         return widget
+    
+    def reorganize_video_grid(self):
+        """Reorganize video tiles in optimal grid layout"""
+        # Clear existing layout
+        while self.video_grid_layout.count():
+            item = self.video_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+        
+        tiles = list(self.video_tiles.values())
+        if not tiles:
+            # Show placeholder
+            placeholder = QLabel("📹\n\nNo Video Feed\n\nClick 'Start Video' to begin")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet("color: #888; font-size: 16px;")
+            placeholder.setMinimumSize(640, 480)
+            self.video_grid_layout.addWidget(placeholder, 0, 0)
+            return
+        
+        # Calculate optimal grid dimensions
+        num_tiles = len(tiles)
+        cols = math.ceil(math.sqrt(num_tiles))
+        rows = math.ceil(num_tiles / cols)
+        
+        # Add tiles to grid
+        for i, tile in enumerate(tiles):
+            row = i // cols
+            col = i % cols
+            self.video_grid_layout.addWidget(tile, row, col)
+    
+    def add_or_update_video_tile(self, source_id, frame, username=None):
+        """Add or update a video tile for a specific source"""
+        if source_id not in self.video_tiles:
+            # Create new tile
+            is_local = (source_id == 'local')
+            display_name = username or (self.username if is_local else source_id)
+            tile = VideoTileWidget(username=display_name, is_local=is_local)
+            self.video_tiles[source_id] = tile
+            self.reorganize_video_grid()
+        
+        # Update frame
+        tile = self.video_tiles[source_id]
+        tile.update_frame(frame)
+        
+        # Update username if provided and changed
+        if username and tile.username != username:
+            tile.update_username(username)
+    
+    def remove_video_tile(self, source_id):
+        """Remove a video tile"""
+        if source_id in self.video_tiles:
+            tile = self.video_tiles.pop(source_id)
+            tile.setParent(None)
+            tile.deleteLater()
+            self.reorganize_video_grid()
+    
+    def update_ip_to_username_mapping(self):
+        """Update the IP to username mapping from user list"""
+        self.ip_to_username.clear()
+        for user in self.user_list_data:
+            if isinstance(user, dict):
+                ip = user.get('ip')
+                username = user.get('username')
+                if ip and username:
+                    self.ip_to_username[ip] = username
+    
+    def get_username_for_ip(self, ip_address):
+        """Get username for a given IP address"""
+        return self.ip_to_username.get(ip_address, ip_address)
     
     def create_screen_area(self):
         """Creates the screen share display area"""
@@ -739,10 +922,12 @@ class SaporaMainWindow(QMainWindow):
                 self.video_thread.stop()
                 self.video_thread.wait(2000)
             
+            # Remove local video tile
+            self.remove_video_tile('local')
+            
             self.video_enabled = False
             self.video_btn.setText("🎥 Start Video")
             self.video_btn.setChecked(False)
-            self.video_label.setText("📹\n\nVideo Stopped")
     
     def on_video_status(self, message):
         """Callback for video status updates (passed to video_client.start_streaming)"""
@@ -753,55 +938,35 @@ class SaporaMainWindow(QMainWindow):
         """Slot invoked in GUI thread when a frame arrives via signal"""
         # payload could be either: frame OR (source_ip, frame)
         try:
+            source_ip = None
+            frame = None
+            
             if isinstance(payload, tuple) and len(payload) >= 2:
-                _, frame = payload[0], payload[1]
+                source_ip, frame = payload[0], payload[1]
             else:
                 frame = payload
+            
             if isinstance(frame, np.ndarray):
-                self.current_frame = frame
-        except Exception:
+                # Update the remote video tile
+                if source_ip:
+                    username = self.get_username_for_ip(source_ip)
+                    self.add_or_update_video_tile(source_ip, frame, username)
+                else:
+                    # Old style frame without source IP, treat as generic remote
+                    self.add_or_update_video_tile('remote', frame, 'Remote')
+        except Exception as e:
             pass
     
     def update_video_display(self):
-        """Update the video label with the latest frame"""
-        # Show local camera feed if available
-        frame = None
-        if self.video_enabled:
-            # video_client may store last_frame attribute
+        """Update the local video tile with camera feed"""
+        # Update local camera feed tile if video is enabled
+        if self.video_enabled and self.video_client:
             try:
                 if hasattr(self.video_client, "last_frame") and self.video_client.last_frame is not None:
                     frame = self.video_client.last_frame
+                    self.add_or_update_video_tile('local', frame, self.username)
             except Exception:
                 pass
-        
-        # Otherwise show received frame
-        if frame is None and self.current_frame is not None:
-            frame = self.current_frame
-        
-        if frame is None:
-            return
-        
-        try:
-            # Convert BGR to RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_frame.shape
-            bytes_per_line = ch * w
-            
-            # Create QImage and scale to fit
-            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qt_image)
-            
-            # Scale to fit label while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                self.video_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            
-            self.video_label.setPixmap(scaled_pixmap)
-        except Exception:
-            # If conversion fails, ignore (frame format might be unexpected)
-            pass
     
     # ========================================================================
     # AUDIO HANDLING
@@ -894,6 +1059,10 @@ class SaporaMainWindow(QMainWindow):
     def _on_user_list_signal(self, users):
         """Thread-safe slot for updating participants list"""
         try:
+            # Store user list for IP mapping
+            self.user_list_data = users
+            self.update_ip_to_username_mapping()
+            
             # users may be a list of dicts or usernames; normalize to usernames
             usernames = []
             for u in users:
@@ -917,6 +1086,11 @@ class SaporaMainWindow(QMainWindow):
             # show list in panel
             user_text = "\n".join(f"• {name}" for name in usernames)
             self.participants_display.setText(user_text)
+            
+            # Update usernames in existing video tiles
+            for source_id, tile in self.video_tiles.items():
+                if source_id != 'local' and source_id in self.ip_to_username:
+                    tile.update_username(self.ip_to_username[source_id])
         except Exception:
             pass
     
