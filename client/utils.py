@@ -60,28 +60,19 @@ def _recv_exact(sock, num_bytes):
 def read_tcp_message(sock):
     """Reads a complete message packet from a TCP socket."""
     # 1. Read header (fixed size)
-    print(f"[DEBUG read_tcp_message] Reading {HEADER_SIZE} byte header...")
     header = _recv_exact(sock, HEADER_SIZE)
     if header is None:
-        print(f"[DEBUG read_tcp_message] Header read failed (None)")
         return None
-    print(f"[DEBUG read_tcp_message] Header received: {len(header)} bytes")
     
     # 2. Parse payload length
     try:
         payload_length = struct.unpack('!I', header[2:6])[0]
-        print(f"[DEBUG read_tcp_message] Payload length: {payload_length}")
     except struct.error as e:
-        print(f"[DEBUG read_tcp_message] Failed to parse payload length: {e}")
         return None
 
     # 3. Read payload (variable size)
-    print(f"[DEBUG read_tcp_message] Reading {payload_length} byte payload...")
     payload = _recv_exact(sock, payload_length)
     if payload is None:
-        print(f"[DEBUG read_tcp_message] Payload read failed (None)")
         return None
-    print(f"[DEBUG read_tcp_message] Payload received: {len(payload)} bytes")
-    print(f"[DEBUG read_tcp_message] Returning complete message: {len(header) + len(payload)} bytes")
         
     return header + payload

@@ -95,17 +95,18 @@ class FileTransferThread(QThread):
     status_update = pyqtSignal(str)
     transfer_complete = pyqtSignal(bool)
     
-    def __init__(self, file_client, operation, file_path, save_path=None):
+    def __init__(self, file_client, operation, file_path, save_path=None, target='all'):
         super().__init__()
         self.file_client = file_client
         self.operation = operation
         self.file_path = file_path
         self.save_path = save_path
+        self.target = target
     
     def run(self):
         try:
             if self.operation == "upload":
-                success = self.file_client.upload_file(self.file_path)
+                success = self.file_client.upload_file(self.file_path, target=self.target)
                 self.transfer_complete.emit(bool(success))
             elif self.operation == "download":
                 success = self.file_client.download_file(self.file_path, self.save_path)
@@ -1264,11 +1265,15 @@ class SaporaMainWindow(QMainWindow):
             
             # users may be a list of dicts or usernames; normalize to usernames
             usernames = []
+            user_details = []
             for u in users:
                 if isinstance(u, dict):
-                    usernames.append(u.get('username') or u.get('name') or str(u))
+                    username = u.get('username') or u.get('name') or str(u)
+                    usernames.append(username)
+                    user_details.append(u)
                 else:
                     usernames.append(str(u))
+                    user_details.append({'username': str(u), 'last_seen_formatted': 'Unknown'})
             
             # Update chat target dropdown with enhanced styling
             current = self.chat_target.currentText() if hasattr(self, 'chat_target') else '📢 Everyone'
@@ -1302,12 +1307,17 @@ class SaporaMainWindow(QMainWindow):
             participant_count = len(usernames)
             participants_html = f"<div style='color: #4CAF50; font-weight: bold; margin-bottom: 5px;'>● {participant_count} Online</div>"
             
-            for name in sorted(usernames):
+            # Sort by username but show details
+            sorted_details = sorted(user_details, key=lambda x: x.get('username', ''))
+            for user_detail in sorted_details:
+                name = user_detail.get('username', 'Unknown')
+                last_seen = user_detail.get('last_seen_formatted', 'Unknown')
                 is_you = (name == self.username)
+                
                 if is_you:
-                    participants_html += f"<div style='color: #4CAF50; margin: 3px 0;'>● {name} <b>(You)</b></div>"
+                    participants_html += f"<div style='color: #4CAF50; margin: 3px 0;'>● {name} <b>(You)</b> <span style='color: #888; font-size: 10px;'>• {last_seen}</span></div>"
                 else:
-                    participants_html += f"<div style='color: #2196F3; margin: 3px 0;'>● {name}</div>"
+                    participants_html += f"<div style='color: #2196F3; margin: 3px 0;'>● {name} <span style='color: #888; font-size: 10px;'>• {last_seen}</span></div>"
             
             self.participants_display.setHtml(participants_html)
             
@@ -1364,11 +1374,20 @@ class SaporaMainWindow(QMainWindow):
         except Exception:
             self._current_upload_name = None
         
-        self.file_thread = FileTransferThread(self.file_client, "upload", file_path)
+        # Determine target from chat dropdown
+        target = 'all'
+        if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
+            val = self.chat_target.currentText().strip()
+            val_clean = val.replace('📢', '').replace('👤', '').strip()
+            if val_clean and val_clean.lower() not in ['all', 'everyone']:
+                target = val_clean
+        
+        # Create enhanced file transfer thread with target
+        self.file_thread = FileTransferThread(self.file_client, "upload", file_path, target=target)
         self.file_thread.status_update.connect(self.file_status_signal.emit)
         self.file_thread.transfer_complete.connect(self.on_file_transfer_complete)
         self.file_thread.start()
-        self.show_notification(f"📤 Uploading {self._current_upload_name or file_path}...")
+        self.show_notification(f"📤 Uploading {self._current_upload_name or file_path} to {target}...")
     
     def on_file_transfer_complete(self, success):
         """Callback when file transfer completes"""
@@ -1438,6 +1457,12 @@ class SaporaMainWindow(QMainWindow):
     
     def _on_screen_frame_signal(self, frame_bgr):
         try:
+            # Handle stop signal (None frame)
+            if frame_bgr is None:
+                self.screen_label.clear()
+                self.screen_label.setText("🖥\n\nScreen sharing stopped\n\nWaiting for presenter...")
+                return
+            
             if isinstance(frame_bgr, tuple) and len(frame_bgr) >= 2:
                 frame_bgr = frame_bgr[1]
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -1491,13 +1516,26 @@ class SaporaMainWindow(QMainWindow):
     # ========================================================================
     
     def show_notification(self, message):
-        """Display a notification message"""
+        """Display a notification message (thread-safe)"""
         # Route through the status_signal to centralize notifications
-        print(f"[NOTIFICATION] {message}")
+        if os.environ.get('SAPORA_DEBUG'):
+            print(f"[NOTIFICATION] {message}")
         try:
-            current_text = self.status_label.text()
-            self.status_label.setText(str(message))
-            QTimer.singleShot(3000, lambda: self.status_label.setText(current_text))
+            # Use QMetaObject.invokeMethod for thread-safe UI updates
+            from PyQt6.QtCore import QMetaObject, Qt
+            QMetaObject.invokeMethod(
+                self.status_label, 
+                "setText", 
+                Qt.ConnectionType.QueuedConnection,
+                str(message)
+            )
+            # Auto-clear after 3 seconds
+            QTimer.singleShot(3000, lambda: QMetaObject.invokeMethod(
+                self.status_label, 
+                "setText", 
+                Qt.ConnectionType.QueuedConnection,
+                "● Connected"
+            ))
         except Exception:
             pass
     

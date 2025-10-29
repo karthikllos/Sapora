@@ -64,8 +64,8 @@ class FileTransferClient:
         except Exception:
             return None
 
-    def upload_file(self, file_path_str):
-        """Uploads a file to the server. Returns True/False."""
+    def upload_file(self, file_path_str, target='all'):
+        """Uploads a file to the server with target routing. Returns True/False."""
         file_path = Path(file_path_str)
         if not file_path.exists() or file_path.stat().st_size == 0:
             self.status_callback(f"❌ File not found or empty: {file_path.name}")
@@ -83,11 +83,20 @@ class FileTransferClient:
         filename = file_path.name
 
         try:
-            # send upload request with metadata
-            metadata_payload = pack_file_metadata(filename, file_size, checksum)
+            # Create enhanced metadata with target information
+            import json
+            metadata_obj = {
+                'filename': filename,
+                'filesize': file_size,
+                'checksum': checksum,
+                'target': target
+            }
+            metadata_payload = json.dumps(metadata_obj).encode('utf-8')
+            
+            # Send upload request with enhanced metadata
             request_packet = pack_message(FILE_REQUEST_UPLOAD, metadata_payload)
             self.sock.sendall(request_packet)
-            self.status_callback(f"📤 Uploading {filename} ({format_size(file_size)})...")
+            self.status_callback(f"📤 Uploading {filename} ({format_size(file_size)}) to {target}...")
 
             bytes_sent = 0
             last_report = time.time()

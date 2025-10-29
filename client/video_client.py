@@ -126,15 +126,28 @@ class VideoClient:
         threading.Thread(target=self._recv_loop, daemon=True).start()
 
     def _register_receiver(self):
-        """Sends registration packet to the server."""
-        # Payload can be simple REGISTRATION command to tell server client is ready for video
-        register_packet = pack_message(CMD_REGISTER, b"VIDEO") 
-        for _ in range(3): # Send a few times for reliability
-            try:
-                self.sock.sendto(register_packet, (self.server_ip, self.server_port))
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"VideoClient Registration Error: {e}")
+        """Sends registration packet to the server with username and room info."""
+        try:
+            # Send registration with username and room info
+            import json
+            reg_data = {
+                'username': self.username,
+                'stream_type': 'video',
+                'room': 'default'  # Could be made configurable
+            }
+            register_packet = pack_message(CMD_REGISTER, json.dumps(reg_data).encode('utf-8'))
+            
+            # Send multiple times for reliability
+            for _ in range(3):
+                try:
+                    self.sock.sendto(register_packet, (self.server_ip, self.server_port))
+                    time.sleep(0.1)
+                except Exception as e:
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"VideoClient Registration Error: {e}")
+        except Exception as e:
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"VideoClient Registration Setup Error: {e}")
 
     def _recv_loop(self):
         """Continuously receives and processes video frames."""

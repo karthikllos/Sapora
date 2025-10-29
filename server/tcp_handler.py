@@ -8,6 +8,7 @@ import socket
 import json
 import sys
 import os
+import time
 
 # Add parent path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -103,7 +104,9 @@ class TCPHandler(threading.Thread):
             raw = payload.decode('utf-8', errors='ignore')
             target_username = None
             
-            print(f"[TCPHandler] Received chat from {self.username}: {raw[:100]}")
+            # Remove debug spam - only log in debug mode
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[TCPHandler] Received chat from {self.username}: {raw[:100]}")
             
             try:
                 obj = json.loads(raw)
@@ -114,12 +117,13 @@ class TCPHandler(threading.Thread):
                     obj['meeting_id'] = self.meeting_id
                 
                 target_username = obj.get('target', 'all')
-                print(f"[TCPHandler] Parsed target: '{target_username}'")
+                
+                # Add timestamp for delivery tracking
+                obj['timestamp'] = time.time()
                 
                 chat_packet = pack_message(MSG_CHAT, json.dumps(obj).encode('utf-8'))
             except json.JSONDecodeError:
                 # Legacy mode: relay as-is to room
-                print(f"[TCPHandler] Non-JSON message, broadcasting to all in room")
                 chat_packet = pack_message(MSG_CHAT, payload)
                 target_username = 'all'
 
@@ -127,30 +131,72 @@ class TCPHandler(threading.Thread):
                 with self.server.rooms_lock:
                     room = self.server.rooms.get(self.meeting_id)
                     if not room:
-                        print(f"[ROOM: {self.meeting_id}] Room not found, skipping chat broadcast")
+                        # Send error back to sender
+                        error_msg = {
+                            'sender': 'SYSTEM',
+                            'target': self.username,
+                            'text': f'Room "{self.meeting_id}" not found',
+                            'timestamp': time.time(),
+                            'meeting_id': self.meeting_id
+                        }
+                        error_packet = pack_message(MSG_CHAT, json.dumps(error_msg).encode('utf-8'))
+                        try:
+                            self.sock.sendall(error_packet)
+                        except:
+                            pass
                         return
                     
                     participants = room.get('participants', {})
-                    print(f"[ROOM: {self.meeting_id}] Room participants: {list(participants.keys())}")
 
-                    # Determine targets
+                    # Determine targets based on message type
+                    targets = []
+                    delivery_status = "unknown"
+                    
                     if target_username and target_username.lower() not in ['all', 'everyone']:
+                        # Unicast message
                         target_sock = participants.get(target_username)
                         if target_sock:
                             targets = [target_sock]
-                            print(f"[ROOM: {self.meeting_id}] Private message to {target_username}")
+                            delivery_status = f"private to {target_username}"
                         else:
-                            print(f"[ROOM: {self.meeting_id}] Target user '{target_username}' not found in room")
-                            targets = []
+                            # Target not found - send error back to sender
+                            error_msg = {
+                                'sender': 'SYSTEM',
+                                'target': self.username,
+                                'text': f'User "{target_username}" not found in room',
+                                'timestamp': time.time(),
+                                'meeting_id': self.meeting_id
+                            }
+                            error_packet = pack_message(MSG_CHAT, json.dumps(error_msg).encode('utf-8'))
+                            try:
+                                self.sock.sendall(error_packet)
+                            except:
+                                pass
+                            return
                     else:
                         # Broadcast to all EXCEPT sender
                         targets = [s for s in room['clients'] if s and s != self.sock]
-                        print(f"[ROOM: {self.meeting_id}] Broadcasting to {len(targets)} recipients (excluding sender)")
+                        delivery_status = f"broadcast to {len(targets)} recipients"
+
+                    # Send delivery confirmation to sender
+                    if targets:
+                        confirm_msg = {
+                            'sender': 'SYSTEM',
+                            'target': self.username,
+                            'text': f'Message delivered: {delivery_status}',
+                            'timestamp': time.time(),
+                            'meeting_id': self.meeting_id,
+                            'type': 'delivery_confirm'
+                        }
+                        confirm_packet = pack_message(MSG_CHAT, json.dumps(confirm_msg).encode('utf-8'))
+                        try:
+                            self.sock.sendall(confirm_packet)
+                        except:
+                            pass
             else:
                 # Fallback if no server reference
                 with self.manager.control_clients_lock:
                     targets = [s for s in self.manager.control_clients.keys() if s != self.sock]
-                    print(f"[TCPHandler] Broadcasting to {len(targets)} recipients (no room support)")
 
             # Send to targets
             sent_count = 0
@@ -161,16 +207,18 @@ class TCPHandler(threading.Thread):
                         client_sock.sendall(chat_packet)
                         sent_count += 1
                 except Exception as e:
-                    print(f"[TCPHandler] Failed to send to client: {e}")
                     failed_count += 1
                     self.manager.remove_client(client_sock)
             
-            print(f"[TCPHandler] Message delivery: {sent_count} sent, {failed_count} failed")
+            # Only log delivery stats in debug mode
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[TCPHandler] Message delivery: {sent_count} sent, {failed_count} failed")
             
         except Exception as e:
             print(f"[TCPHandler] Chat Broadcast Error: {e}")
-            import traceback
-            traceback.print_exc()
+            if os.environ.get('SAPORA_DEBUG'):
+                import traceback
+                traceback.print_exc()
 
     def _cleanup(self):
         """Removes client from manager and closes socket; leaves room."""

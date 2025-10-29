@@ -11,10 +11,10 @@ Improvements:
 import threading
 import socket
 import time
+import os
 from collections import deque
 
 import sys
-import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.constants import UDP_STREAM_BUFFER, AUDIO_PORT, SOCKET_TIMEOUT, AUDIO_CHUNK
@@ -83,24 +83,33 @@ class UDPAudioServer(threading.Thread):
     def _handle_incoming_chunk(self, data, sender_addr):
         """Extracts audio payload and buffers it for mixing."""
         try:
-            version, msg_type, payload_length, seq_num, audio_data = unpack_message(data)
+            version, msg_type, payload_length, seq_num, payload = unpack_message(data)
         except ValueError:
             # Malformed packet
             return
         
-        if msg_type != STREAM_AUDIO:
-            # Could be CMD_REGISTER, but registration handled elsewhere
-            return
-
-        key = tuple(sender_addr)
-        now = time.time()
-        with self.buffers_lock:
-            if key not in self.audio_buffers:
-                # maxlen bounds stored latency
-                self.audio_buffers[key] = deque(maxlen=10) 
-            self.audio_buffers[key].append(audio_data)
-        with self.last_seen_lock:
-            self.last_seen[key] = now
+        if msg_type == STREAM_AUDIO:
+            # Handle audio data
+            key = tuple(sender_addr)
+            now = time.time()
+            with self.buffers_lock:
+                if key not in self.audio_buffers:
+                    # maxlen bounds stored latency
+                    self.audio_buffers[key] = deque(maxlen=10) 
+                self.audio_buffers[key].append(payload)
+            with self.last_seen_lock:
+                self.last_seen[key] = now
+        elif msg_type == CMD_REGISTER:
+            # Handle registration with username/room info
+            try:
+                import json
+                reg_data = json.loads(payload.decode('utf-8'))
+                username = reg_data.get('username', 'Unknown')
+                room = reg_data.get('room', 'default')
+                # Update manager with username mapping
+                self.manager.update_client_status_by_ip(sender_addr[0], username=username, room=room)
+            except Exception:
+                pass
 
     def _audio_mixer(self):
         """Mixes and broadcasts audio chunks periodically."""
@@ -132,6 +141,9 @@ class UDPAudioServer(threading.Thread):
             except Exception:
                 all_targets = []
 
+            sent_count = 0
+            failed_count = 0
+            
             for target in list(all_targets):
                 try:
                     target_room = self.manager.get_room_by_ip(target[0])
@@ -159,7 +171,8 @@ class UDPAudioServer(threading.Thread):
                     mixed_audio = mix_audio_chunks(sources_for_mix)
                 except Exception as e:
                     # If mixing fails, skip this target
-                    print(f"UDPAudioServer: mix error for {target}: {e}")
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"UDPAudioServer: mix error for {target}: {e}")
                     continue
 
                 if not mixed_audio:
@@ -168,9 +181,15 @@ class UDPAudioServer(threading.Thread):
                 packet = pack_message(STREAM_AUDIO, mixed_audio)
                 try:
                     self.sock.sendto(packet, target)
+                    sent_count += 1
                 except Exception:
-                    # transient network errors: ignore and continue
-                    pass
+                    failed_count += 1
+                    # Remove stale listener
+                    self.manager.unregister_stream('audio', target)
+            
+            # Log stats only in debug mode
+            if os.environ.get('SAPORA_DEBUG') and sent_count > 0:
+                print(f"[UDPAudioServer] Mixed audio: {sent_count} sent, {failed_count} failed")
 
             # cleanup stale clients and throttle loop properly
             self._cleanup_stale_clients()

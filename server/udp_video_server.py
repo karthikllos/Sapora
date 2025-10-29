@@ -5,13 +5,14 @@ Receives video streams and broadcasts them to all registered video listeners.
 import threading
 import socket
 import time
+import os
 
 # Import constants/protocol/utils
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.constants import UDP_STREAM_BUFFER, VIDEO_PORT, SOCKET_TIMEOUT
-from shared.protocol import STREAM_VIDEO
+from shared.protocol import STREAM_VIDEO, CMD_REGISTER
 from server.utils import unpack_message, get_message_type_name
 
 class UDPVideoServer(threading.Thread):
@@ -37,19 +38,28 @@ class UDPVideoServer(threading.Thread):
                     # Receive video frame
                     data, sender_addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
                     
-                    # Update client registration (sender is also a potential receiver)
-                    self.manager.register_stream('video', sender_addr)
+                # Update client registration (sender is also a potential receiver)
+                self.manager.register_stream('video', sender_addr)
 
-                    # Quick protocol check
-                    try:
-                        version, msg_type, payload_length, seq_num, payload = unpack_message(data)
-                        if msg_type != STREAM_VIDEO:
-                             continue # Ignore non-video packets
-                    except ValueError:
-                         continue # Ignore malformed packets
-
-                    # Broadcast the raw packet (header + payload) to all listeners
-                    self._broadcast_frame(data, sender_addr)
+                # Quick protocol check
+                try:
+                    version, msg_type, payload_length, seq_num, payload = unpack_message(data)
+                    if msg_type == STREAM_VIDEO:
+                        # Broadcast the raw packet (header + payload) to all listeners
+                        self._broadcast_frame(data, sender_addr)
+                    elif msg_type == CMD_REGISTER:
+                        # Handle registration with username/room info
+                        try:
+                            import json
+                            reg_data = json.loads(payload.decode('utf-8'))
+                            username = reg_data.get('username', 'Unknown')
+                            room = reg_data.get('room', 'default')
+                            # Update manager with username mapping
+                            self.manager.update_client_status_by_ip(sender_addr[0], username=username, room=room)
+                        except Exception:
+                            pass
+                except ValueError:
+                    continue # Ignore malformed packets
                         
                 except socket.timeout:
                     continue
@@ -68,19 +78,35 @@ class UDPVideoServer(threading.Thread):
             sender_ip = sender_addr[0]
             room = self.manager.get_room_by_ip(sender_ip)
             listeners = self.manager.get_video_listeners(room=room)
-        except Exception:
-            listeners = self.manager.get_video_listeners()
-        
-        for listener_addr in listeners:
-            # Do not send back to the sender
-            if listener_addr == sender_addr:
-                continue
+            
+            # Only broadcast if we have listeners
+            if not listeners:
+                return
                 
-            try:
-                self.sock.sendto(frame_data, listener_addr)
-            except Exception:
-                # In a real app, track dropped packets or remove stale listener here.
-                pass 
+            # Send to all listeners except sender
+            sent_count = 0
+            failed_count = 0
+            
+            for listener_addr in listeners:
+                # Do not send back to the sender
+                if listener_addr == sender_addr:
+                    continue
+                    
+                try:
+                    self.sock.sendto(frame_data, listener_addr)
+                    sent_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    # Remove stale listener
+                    self.manager.unregister_stream('video', listener_addr)
+            
+            # Log stats only in debug mode
+            if os.environ.get('SAPORA_DEBUG') and sent_count > 0:
+                print(f"[UDPVideoServer] Broadcast: {sent_count} sent, {failed_count} failed to room '{room}'")
+                
+        except Exception as e:
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[UDPVideoServer] Broadcast error: {e}") 
                 
     def stop(self):
         if self.sock:

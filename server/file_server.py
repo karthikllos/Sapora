@@ -121,18 +121,30 @@ class FileHandler(threading.Thread):
             print(f"[FileHandler] Connection closed for {self.ip}:{self.port}")
 
     def _handle_upload_request(self, payload):
-        """Processes an upload initiation request."""
-        print(f"[FileHandler] Upload requested from {self.ip}:{self.port}")
+        """Processes an upload initiation request with target routing."""
+        if os.environ.get('SAPORA_DEBUG'):
+            print(f"[FileHandler] Upload requested from {self.ip}:{self.port}")
+        
         filename = None
         file_path = None
+        target_users = []  # List of users to notify about file availability
 
         try:
             metadata = unpack_file_metadata(payload)
             filename = metadata.get('filename')
             filesize = int(metadata.get('filesize', 0))
             checksum = metadata.get('checksum')
+            
+            # Extract target information if present
+            target_info = metadata.get('target', 'all')
+            if target_info and target_info != 'all':
+                target_users = [target_info]
+            else:
+                target_users = ['all']  # Broadcast to all
+                
         except Exception as e:
-            print(f"[FileHandler] Invalid metadata from {self.ip}: {e}")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Invalid metadata from {self.ip}: {e}")
             self._safe_send(pack_message(FILE_ACK_FAILURE, b"Invalid metadata"))
             return
 
@@ -141,7 +153,8 @@ class FileHandler(threading.Thread):
             return
 
         if filesize > MAX_FILE_SIZE:
-            print(f"[FileHandler] Rejected upload: {filename} too large ({filesize} bytes).")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Rejected upload: {filename} too large ({filesize} bytes).")
             self._safe_send(pack_message(FILE_ACK_FAILURE, b"File too large"))
             return
 
@@ -156,7 +169,8 @@ class FileHandler(threading.Thread):
             if not str(file_path).startswith(str(self.storage_dir.resolve())):
                 raise ValueError("Invalid filename (path traversal)")
         except Exception as e:
-            print(f"[FileHandler] Filename validation error: {e}")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Filename validation error: {e}")
             self._safe_send(pack_message(FILE_ACK_FAILURE, b"Invalid filename"))
             return
 
@@ -187,16 +201,21 @@ class FileHandler(threading.Thread):
                         file_path.unlink(missing_ok=True)
                     except Exception:
                         pass
-                    print(f"[FileHandler] Checksum mismatch for {filename}. Deleted file.")
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[FileHandler] Checksum mismatch for {filename}. Deleted file.")
                     self._safe_send(pack_message(FILE_ACK_FAILURE, b"Checksum mismatch"))
                     return
 
-            print(f"[FileHandler] Successfully uploaded {filename} ({bytes_received} bytes).")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Successfully uploaded {filename} ({bytes_received} bytes).")
             self._safe_send(pack_message(FILE_ACK_SUCCESS, b"Upload successful"))
-            # Client-side chat announce will notify recipients and trigger download.
+            
+            # Notify target users about file availability
+            self._notify_file_availability(filename, filesize, target_users)
 
         except Exception as e:
-            print(f"[FileHandler] Upload failed for {filename}: {e}")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Upload failed for {filename}: {e}")
             try:
                 if file_path and file_path.exists():
                     file_path.unlink()
@@ -206,6 +225,79 @@ class FileHandler(threading.Thread):
                 self._safe_send(pack_message(FILE_ACK_FAILURE, str(e).encode('utf-8')))
             except Exception:
                 pass
+    
+    def _notify_file_availability(self, filename, filesize, target_users):
+        """Notify target users about file availability."""
+        try:
+            # Get sender info from manager
+            sender_username = self.manager.get_client_username_by_ip(self.ip)
+            
+            # Create file notification
+            notification = {
+                'type': 'file_announce',
+                'filename': filename,
+                'sender': sender_username,
+                'size': filesize,
+                'target': target_users[0] if len(target_users) == 1 else 'all',
+                'timestamp': time.time()
+            }
+            
+            # Send notification via chat system if available
+            if hasattr(self.manager, 'server_ref') and self.manager.server_ref:
+                self._broadcast_file_notification(notification)
+                
+        except Exception as e:
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] File notification error: {e}")
+    
+    def _broadcast_file_notification(self, notification):
+        """Broadcast file notification to target users."""
+        try:
+            import json
+            from shared.protocol import MSG_CHAT
+            from server.utils import pack_message
+            
+            target = notification.get('target', 'all')
+            server = self.manager.server_ref
+            
+            with server.rooms_lock:
+                # Find the room containing the sender
+                sender_room = None
+                for room_id, room in server.rooms.items():
+                    if self.ip in [info['addr'][0] for info in self.manager.control_clients.values()]:
+                        sender_room = room_id
+                        break
+                
+                if not sender_room:
+                    return
+                
+                room = server.rooms.get(sender_room)
+                if not room:
+                    return
+                
+                participants = room.get('participants', {})
+                
+                # Determine targets
+                if target == 'all':
+                    targets = list(participants.values())
+                else:
+                    target_sock = participants.get(target)
+                    targets = [target_sock] if target_sock else []
+                
+                # Send notification to targets
+                notification_json = json.dumps(notification)
+                packet = pack_message(MSG_CHAT, notification_json.encode('utf-8'))
+                
+                for sock in targets:
+                    try:
+                        if sock:
+                            sock.sendall(packet)
+                    except Exception:
+                        pass
+                        
+        except Exception as e:
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[FileHandler] Broadcast notification error: {e}")
 
     def _handle_download_request(self, payload):
         """Processes a download request."""

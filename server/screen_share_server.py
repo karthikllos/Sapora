@@ -154,6 +154,13 @@ class ScreenShareServer:
                 
                 frame_size = struct.unpack('!I', size_data)[0]
                 
+                # Check for stop control packet (frame_size = 0)
+                if frame_size == 0:
+                    # Send stop control to all viewers
+                    self._broadcast_stop_control()
+                    print(f"🎬 Presenter {address[0]} stopped sharing")
+                    break
+                
                 # Validate size
                 if frame_size > 10 * 1024 * 1024:  # Max 10MB
                     print(f"⚠️  Frame too large: {frame_size}")
@@ -177,6 +184,27 @@ class ScreenShareServer:
                     
         except Exception as e:
             print(f"⚠️  Presenter error: {e}")
+    
+    def _broadcast_stop_control(self):
+        """Broadcast stop control packet to all viewers"""
+        with self.lock:
+            disconnected = []
+            
+            # Send stop control packet (4 bytes of zeros)
+            stop_packet = struct.pack('!I', 0)
+            
+            for viewer_socket in list(self.viewers.keys()):
+                try:
+                    viewer_socket.sendall(stop_packet)
+                except Exception as e:
+                    disconnected.append(viewer_socket)
+            
+            # Remove disconnected viewers
+            for socket in disconnected:
+                if socket in self.viewers:
+                    addr = self.viewers[socket]
+                    del self.viewers[socket]
+                    print(f"👁️  Viewer disconnected (stop broadcast failed): {addr[0]}")
     
     def _handle_viewer(self, client_socket, address):
         """Handle viewer waiting for frames"""

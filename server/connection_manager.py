@@ -100,6 +100,19 @@ class ConnectionManager:
                 return True
             return False
 
+    def update_client_status_by_ip(self, ip_address, username=None, room=None):
+        """Updates client's status by IP address (for UDP registrations)."""
+        with self.control_clients_lock:
+            for sock, info in self.control_clients.items():
+                if info['addr'][0] == ip_address:
+                    info['last_seen'] = time.time()
+                    if username and info['username'] == "Unknown":
+                        info['username'] = username
+                    if room:
+                        info['room'] = room
+                    return True
+        return False
+
     def get_client_by_socket(self, client_socket):
         """Retrieves client info by socket."""
         with self.control_clients_lock:
@@ -114,12 +127,38 @@ class ConnectionManager:
             return ip_address # Default to IP if no username is found
 
     def get_user_list(self):
-        """Returns a list of connected user information."""
+        """Returns a list of connected user information with formatted last_seen."""
         with self.control_clients_lock:
             return [
-                {'username': info['username'], 'ip': info['addr'][0], 'last_seen': info['last_seen']}
+                {
+                    'username': info['username'], 
+                    'ip': info['addr'][0], 
+                    'last_seen': info['last_seen'],
+                    'last_seen_formatted': self._format_last_seen(info['last_seen']),
+                    'room': info.get('room', 'default')
+                }
                 for info in self.control_clients.values()
             ]
+    
+    def _format_last_seen(self, timestamp):
+        """Format timestamp as human-readable string."""
+        try:
+            import datetime
+            now = time.time()
+            diff = now - timestamp
+            
+            if diff < 60:  # Less than 1 minute
+                return f"{int(diff)}s ago"
+            elif diff < 3600:  # Less than 1 hour
+                return f"{int(diff/60)}m ago"
+            elif diff < 86400:  # Less than 1 day
+                return f"{int(diff/3600)}h ago"
+            else:
+                # More than 1 day, show date
+                dt = datetime.datetime.fromtimestamp(timestamp)
+                return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return "Unknown"
 
     # --- Client Management (UDP/Streaming) ---
 
@@ -188,8 +227,27 @@ class ConnectionManager:
             # Remove stale connections OUTSIDE the lock to avoid deadlock
             for sock in to_remove:
                 self.remove_client(sock)
+            
+            # Also clean up stale UDP streams
+            self._cleanup_stale_streams()
         
         print("Manager: Heartbeat thread stopped.")
+    
+    def _cleanup_stale_streams(self):
+        """Remove stale UDP stream registrations."""
+        current_time = time.time()
+        stale_threshold = CLIENT_IDLE_TIMEOUT
+        
+        with self.stream_clients_lock:
+            to_remove = []
+            for ip_addr, info in self.stream_clients.items():
+                if current_time - info['last_seen'] > stale_threshold:
+                    to_remove.append(ip_addr)
+            
+            for ip_addr in to_remove:
+                del self.stream_clients[ip_addr]
+                if os.environ.get('SAPORA_DEBUG'):
+                    print(f"[Manager] Removed stale stream: {ip_addr}")
 
     def _ip_in_room(self, ip_addr: str, room: str) -> bool:
         """Check if a given IP belongs to a client in the specified room."""

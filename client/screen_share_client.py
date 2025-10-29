@@ -117,6 +117,20 @@ class ScreenShareClient:
                     break
                 frame_size = struct.unpack('!I', size_data)[0]
 
+                # Check for stop control packet (frame_size = 0)
+                if frame_size == 0:
+                    # Screen sharing stopped - clear display
+                    if self.frame_callback:
+                        try:
+                            # Send None to indicate stop
+                            self.frame_callback(None)
+                        except Exception:
+                            pass
+                    else:
+                        cv2.destroyAllWindows()
+                    self.status_callback("🛑 Screen sharing stopped by presenter")
+                    break
+
                 # Read frame data
                 frame_data = self._recv_exact(frame_size)
                 if not frame_data:
@@ -155,6 +169,17 @@ class ScreenShareClient:
     def stop(self):
         """Stop running and close socket"""
         self.running = False
+        
+        # Send stop control packet if connected
+        if self.socket and self.mode == "presenter":
+            try:
+                # Send stop control packet (4 bytes of zeros)
+                import struct
+                stop_packet = struct.pack('!I', 0)
+                self.socket.sendall(stop_packet)
+            except Exception:
+                pass
+        
         try:
             if self.socket:
                 self.socket.close()

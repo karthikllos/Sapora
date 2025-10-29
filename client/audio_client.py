@@ -159,15 +159,27 @@ class AudioClient:
             self.stop_streaming()
 
     def _register_receiver(self):
-        """Sends registration packet to the server's audio port."""
-        register_packet = pack_message(CMD_REGISTER, b"AUDIO")
-        for _ in range(3):
-            try:
-                # FIX: Use single socket - this ensures server knows our receive address
-                self.sock.sendto(register_packet, (self.server_ip, self.server_port))
-            except Exception as e:
-                print(f"AudioClient Registration Error: {e}")
-            time.sleep(0.05)
+        """Sends registration packet to the server's audio port with username and room info."""
+        try:
+            import json
+            reg_data = {
+                'username': self.username,
+                'stream_type': 'audio',
+                'room': 'default'  # Could be made configurable
+            }
+            register_packet = pack_message(CMD_REGISTER, json.dumps(reg_data).encode('utf-8'))
+            
+            for _ in range(3):
+                try:
+                    # Use single socket - this ensures server knows our receive address
+                    self.sock.sendto(register_packet, (self.server_ip, self.server_port))
+                except Exception as e:
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"AudioClient Registration Error: {e}")
+                time.sleep(0.05)
+        except Exception as e:
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"AudioClient Registration Setup Error: {e}")
 
     def _recv_loop(self):
         """Continuously receives mixed audio and plays it back."""

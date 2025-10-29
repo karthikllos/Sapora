@@ -125,13 +125,16 @@ class ChatClient:
                             continue
                     except Exception:
                         pass
-                    print(f"[ChatClient] Unknown message type: {msg_type}")
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] Unknown message type: {msg_type}")
 
             except (ConnectionResetError, OSError) as e:
-                print(f"[ChatClient] Connection error: {e}")
+                if os.environ.get('SAPORA_DEBUG'):
+                    print(f"[ChatClient] Connection error: {e}")
                 break
             except Exception as e:
-                print(f"[ChatClient] Listen Error: {e}")
+                if os.environ.get('SAPORA_DEBUG'):
+                    print(f"[ChatClient] Listen Error: {e}")
                 continue
 
         self.disconnect()
@@ -146,20 +149,26 @@ class ChatClient:
                 sender = obj.get('sender', 'SYSTEM')
                 text = obj.get('text', '')
                 target = obj.get('target', 'all')
+                msg_type = obj.get('type', '')
                 
                 # Handle file announcements separately
-                if obj.get('type') == 'file_announce':
+                if msg_type == 'file_announce':
                     # Only process if we're the target
                     if target.lower() == 'all' or target == self.username:
                         if self.file_callback:
                             self.file_callback(obj)
                     return
                 
+                # Handle delivery confirmations (don't show to user)
+                if msg_type == 'delivery_confirm':
+                    # These are system messages confirming delivery - don't display
+                    return
+                
                 # Filter messages: only show if we're the target or it's a broadcast
-                # DON'T filter here - let the UI handle it, or we won't see our own messages
                 if target.lower() != 'all' and target != self.username and sender != self.username:
                     # This message is for someone else (private message not for us)
-                    print(f"[ChatClient] Filtered out message from {sender} to {target}")
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] Filtered out message from {sender} to {target}")
                     return
                 
                 # Add target annotation for private messages
@@ -184,7 +193,8 @@ class ChatClient:
                     self.message_callback(sender.strip(), text.strip())
                     
         except Exception as e:
-            print(f"[ChatClient] Chat Decode Error: {e}")
+            if os.environ.get('SAPORA_DEBUG'):
+                print(f"[ChatClient] Chat Decode Error: {e}")
     
     def _handle_file_notify(self, payload):
         try:

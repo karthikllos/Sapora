@@ -76,24 +76,40 @@ def broadcast_user_list(manager):
 # Room-scoped participant update
 
 def broadcast_room_user_list(server, room_id: str):
+    """Broadcast detailed user list to all participants in a room."""
     try:
         with server.rooms_lock:
             room = server.rooms.get(room_id)
             if not room:
                 return
             participants = room.get('participants') or {}
-            usernames = list(participants.keys())
-            payload = json.dumps(usernames).encode('utf-8')
+            
+            # Get detailed user info for this room
+            user_list = []
+            for username, sock in participants.items():
+                if sock in server.manager.control_clients:
+                    client_info = server.manager.control_clients[sock]
+                    user_list.append({
+                        'username': username,
+                        'ip': client_info['addr'][0],
+                        'last_seen': client_info['last_seen'],
+                        'last_seen_formatted': server.manager._format_last_seen(client_info['last_seen']),
+                        'room': room_id
+                    })
+            
+            payload = json.dumps(user_list).encode('utf-8')
             packet = pack_message(CMD_USER_LIST, payload)
             sockets = list(participants.values())
+            
+        # Send to all participants in the room
         for sock in sockets:
             try:
                 sock.sendall(packet)
             except Exception:
                 # ignore; cleanup handled elsewhere
                 pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[broadcast_room_user_list] Error: {e}")
 
 # --- Audio Mixing Helpers ---
 
