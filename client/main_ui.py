@@ -421,6 +421,7 @@ class SaporaMainWindow(QMainWindow):
     local_screen_signal = pyqtSignal(object)     # local presenter preview frame (BGR)
     file_status_signal = pyqtSignal(str)         # file status messages
     status_signal = pyqtSignal(str)              # generic status updates
+    file_announce_signal = pyqtSignal(object)    # file announce events (thread-safe)
     
     def __init__(self, prefill: Optional[dict] = None):
         super().__init__()
@@ -468,6 +469,7 @@ class SaporaMainWindow(QMainWindow):
         self.local_screen_signal.connect(self._on_screen_frame_signal)
         self.file_status_signal.connect(self._on_file_status_signal)
         self.status_signal.connect(self._on_status_signal)
+        self.file_announce_signal.connect(self._on_file_announce)
         
         # Show login dialog first
         self.show_login()
@@ -535,7 +537,8 @@ class SaporaMainWindow(QMainWindow):
             message_cb=self.chat_message_signal.emit
         )
         try:
-            self.chat_client.set_file_callback(self._on_file_announce)
+            # Route file announcements from network thread to GUI thread via signal
+            self.chat_client.set_file_callback(self.file_announce_signal.emit)
         except Exception:
             pass
         

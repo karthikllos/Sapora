@@ -40,7 +40,11 @@ class TCPHandler(threading.Thread):
 
         try:
             while self.manager.running and self.running:
-                raw = read_tcp_message(self.sock)
+                try:
+                    raw = read_tcp_message(self.sock)
+                except socket.timeout:
+                    # No data this interval; keep connection alive
+                    continue
                 if not raw:
                     break
 
@@ -59,8 +63,6 @@ class TCPHandler(threading.Thread):
                 else:
                     print(f"[TCPHandler] Unknown message type: {get_message_type_name(msg_type)}")
 
-        except socket.timeout:
-            pass
         except ConnectionResetError:
             print(f"[TCPHandler] Client {self.username} disconnected abruptly.")
         except Exception as e:

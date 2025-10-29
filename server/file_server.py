@@ -273,10 +273,13 @@ class FileHandler(threading.Thread):
                 participants = room.get('participants', {})
 
                 # Determine targets
-                if target == 'all':
+                if str(target).strip().lower() in ['all', 'everyone', '']:
                     targets = list(participants.values())
                 else:
-                    target_sock = participants.get(target)
+                    # Case-insensitive username lookup
+                    target_lower = str(target).strip().lower()
+                    participants_ci = {str(name).strip().lower(): sock for name, sock in participants.items()}
+                    target_sock = participants_ci.get(target_lower)
                     targets = [target_sock] if target_sock else []
 
                 # Send notification to targets

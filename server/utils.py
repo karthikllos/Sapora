@@ -26,7 +26,9 @@ from shared.helpers import pack_message, unpack_message
 # --- Protocol Serialization Helpers ---
 
 def _recv_exact(sock, num_bytes):
-    """Receive exactly num_bytes from a TCP socket or return None on failure."""
+    """Receive exactly num_bytes from a TCP socket or return None on failure.
+    NOTE: Timeouts are propagated so callers can decide to continue rather than treat as disconnect.
+    """
     data = b''
     try:
         while len(data) < num_bytes:
@@ -36,7 +38,8 @@ def _recv_exact(sock, num_bytes):
             data += chunk
         return data
     except socket.timeout:
-        return None
+        # Propagate timeout so TCP handlers can continue their loops instead of disconnecting clients
+        raise
     except Exception:
         return None
 
