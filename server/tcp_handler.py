@@ -153,8 +153,10 @@ class TCPHandler(threading.Thread):
                     delivery_status = "unknown"
                     
                     if target_username and target_username.lower() not in ['all', 'everyone']:
-                        # Unicast message
-                        target_sock = participants.get(target_username)
+                        # Unicast message (case-insensitive target matching)
+                        norm = str(target_username).strip().lower()
+                        participants_lc = {str(name).strip().lower(): sock for name, sock in participants.items()}
+                        target_sock = participants_lc.get(norm)
                         if target_sock:
                             targets = [target_sock]
                             delivery_status = f"private to {target_username}"
