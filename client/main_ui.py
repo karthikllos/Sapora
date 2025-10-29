@@ -1199,7 +1199,6 @@ class SaporaMainWindow(QMainWindow):
             print(f"[UI] Chat exception: {e}")
             import traceback
             traceback.print_exc()
-        traceback.print_exc()
     
     # ---- Signal slots (these run in GUI thread) ----
     def _on_chat_message_signal(self, sender, message):
