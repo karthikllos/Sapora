@@ -1426,8 +1426,12 @@ class SaporaMainWindow(QMainWindow):
                 target = 'all'
                 if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
                     val = self.chat_target.currentText().strip()
-                    if val and val.lower() != 'all':
-                        target = val
+                    # Remove emoji prefixes and normalize
+                    val_clean = val.replace('📢', '').replace('👤', '').strip()
+                    if val_clean and val_clean.lower() not in ['all', 'everyone']:
+                        target = val_clean
+                    else:
+                        target = 'all'
                 # Send announce (routed via chat); receivers auto-download
                 if hasattr(self, 'chat_client') and self.chat_client:
                     self.chat_client.send_file_announce(fname or '', target=target)

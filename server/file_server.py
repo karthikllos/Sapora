@@ -259,35 +259,30 @@ class FileHandler(threading.Thread):
             
             target = notification.get('target', 'all')
             server = self.manager.server_ref
-            
+
+            # Determine sender's room reliably via ConnectionManager
+            sender_room = self.manager.get_room_by_ip(self.ip)
+            if not sender_room:
+                return
+
             with server.rooms_lock:
-                # Find the room containing the sender
-                sender_room = None
-                for room_id, room in server.rooms.items():
-                    if self.ip in [info['addr'][0] for info in self.manager.control_clients.values()]:
-                        sender_room = room_id
-                        break
-                
-                if not sender_room:
-                    return
-                
                 room = server.rooms.get(sender_room)
                 if not room:
                     return
-                
+
                 participants = room.get('participants', {})
-                
+
                 # Determine targets
                 if target == 'all':
                     targets = list(participants.values())
                 else:
                     target_sock = participants.get(target)
                     targets = [target_sock] if target_sock else []
-                
+
                 # Send notification to targets
                 notification_json = json.dumps(notification)
                 packet = pack_message(MSG_CHAT, notification_json.encode('utf-8'))
-                
+
                 for sock in targets:
                     try:
                         if sock:
