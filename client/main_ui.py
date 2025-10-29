@@ -928,6 +928,8 @@ class SaporaMainWindow(QMainWindow):
         input_layout.addWidget(self.chat_input, 1)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
+        
+        return panel
 
     def create_control_bar(self):
         """Creates the bottom control bar with action buttons"""
