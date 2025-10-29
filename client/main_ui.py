@@ -1479,6 +1479,12 @@ class SaporaMainWindow(QMainWindow):
             self._presenting = False
             self.show_notification("🛑 Screen sharing stopped")
             self.screen_btn.setText("🖥 Share Screen")
+            # Clear screen share preview panel
+            try:
+                self.screen_label.clear()
+                self.screen_label.setText("🖥\n\nNo Screen Share\n\nWaiting for presenter...")
+            except Exception:
+                pass
     
     # ========================================================================
     # UI HELPERS

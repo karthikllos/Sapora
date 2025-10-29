@@ -178,14 +178,11 @@ class ConnectionManager:
 
                 for sock, info in list(self.control_clients.items()):
                     try:
-                        sock.send(heartbeat_packet) # Send heartbeat
-                        
-                        # Check for stale connection based on last_seen
-                        if time.time() - info['last_seen'] > CLIENT_IDLE_TIMEOUT:
-                            print(f"Manager: Timeout detected for {info['username']} ({info['addr'][0]}).")
-                            to_remove.append(sock)
-
+                        sock.send(heartbeat_packet)  # Send heartbeat
+                        # Consider heartbeat send success as client activity
+                        info['last_seen'] = time.time()
                     except Exception:
+                        # Heartbeat failed, mark for removal
                         to_remove.append(sock)
             
             # Remove stale connections OUTSIDE the lock to avoid deadlock
