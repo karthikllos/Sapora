@@ -102,19 +102,26 @@ class TCPHandler(threading.Thread):
         try:
             raw = payload.decode('utf-8', errors='ignore')
             target_username = None
+            
+            print(f"[TCPHandler] Received chat from {self.username}: {raw[:100]}")
+            
             try:
                 obj = json.loads(raw)
-                # Normalize fields and preserve JSON payload on the wire (enables file_announce, rich chat)
+                # Normalize fields and preserve JSON payload on the wire
                 if 'sender' not in obj or not obj.get('sender'):
                     obj['sender'] = self.username
                 if 'meeting_id' not in obj or not obj.get('meeting_id'):
                     obj['meeting_id'] = self.meeting_id
-                target_username = obj.get('target')
+                
+                target_username = obj.get('target', 'all')
+                print(f"[TCPHandler] Parsed target: '{target_username}'")
+                
                 chat_packet = pack_message(MSG_CHAT, json.dumps(obj).encode('utf-8'))
-            except Exception:
-                # legacy mode: relay as-is to room
-                text = raw
+            except json.JSONDecodeError:
+                # Legacy mode: relay as-is to room
+                print(f"[TCPHandler] Non-JSON message, broadcasting to all in room")
                 chat_packet = pack_message(MSG_CHAT, payload)
+                target_username = 'all'
 
             if self.server:
                 with self.server.rooms_lock:
@@ -122,30 +129,48 @@ class TCPHandler(threading.Thread):
                     if not room:
                         print(f"[ROOM: {self.meeting_id}] Room not found, skipping chat broadcast")
                         return
+                    
                     participants = room.get('participants', {})
+                    print(f"[ROOM: {self.meeting_id}] Room participants: {list(participants.keys())}")
 
                     # Determine targets
-                    if target_username and target_username.lower() != 'all':
+                    if target_username and target_username.lower() not in ['all', 'everyone']:
                         target_sock = participants.get(target_username)
-                        targets = [target_sock] if target_sock else []
-                        print(f"[ROOM: {self.meeting_id}] Relayed chat from {self.username} → {target_username}")
+                        if target_sock:
+                            targets = [target_sock]
+                            print(f"[ROOM: {self.meeting_id}] Private message to {target_username}")
+                        else:
+                            print(f"[ROOM: {self.meeting_id}] Target user '{target_username}' not found in room")
+                            targets = []
                     else:
+                        # Broadcast to all EXCEPT sender
                         targets = [s for s in room['clients'] if s and s != self.sock]
-                        print(f"[ROOM: {self.meeting_id}] Broadcast chat from {self.username} ({len(targets)} recipients)")
+                        print(f"[ROOM: {self.meeting_id}] Broadcasting to {len(targets)} recipients (excluding sender)")
             else:
+                # Fallback if no server reference
                 with self.manager.control_clients_lock:
                     targets = [s for s in self.manager.control_clients.keys() if s != self.sock]
+                    print(f"[TCPHandler] Broadcasting to {len(targets)} recipients (no room support)")
 
-            # Send
+            # Send to targets
+            sent_count = 0
+            failed_count = 0
             for client_sock in list(targets):
                 try:
                     if client_sock:
                         client_sock.sendall(chat_packet)
+                        sent_count += 1
                 except Exception as e:
                     print(f"[TCPHandler] Failed to send to client: {e}")
+                    failed_count += 1
                     self.manager.remove_client(client_sock)
+            
+            print(f"[TCPHandler] Message delivery: {sent_count} sent, {failed_count} failed")
+            
         except Exception as e:
             print(f"[TCPHandler] Chat Broadcast Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _cleanup(self):
         """Removes client from manager and closes socket; leaves room."""
