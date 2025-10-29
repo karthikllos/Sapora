@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QScrollArea, QFrame, QDialog,
     QDialogButtonBox, QSizePolicy, QGridLayout
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QObject
-from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QObject, QUrl
+from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QDesktopServices
 import cv2
 import numpy as np
 import json
@@ -791,6 +791,16 @@ class SaporaMainWindow(QMainWindow):
         self.chat_status_indicator = QLabel("● Online")
         self.chat_status_indicator.setStyleSheet("color: #4CAF50; font-size: 10px; font-weight: bold;")
         header_layout.addWidget(self.chat_status_indicator)
+        # Open Downloads folder button
+        open_dl_btn = QPushButton("📂 Downloads")
+        open_dl_btn.setToolTip("Open downloads folder")
+        open_dl_btn.clicked.connect(self.open_downloads_folder)
+        open_dl_btn.setStyleSheet("""
+            QPushButton { background-color: #2a2a2a; color: white; border: 1px solid #555; border-radius: 5px; padding: 4px 8px; }
+            QPushButton:hover { background-color: #333; }
+            QPushButton:pressed { background-color: #444; }
+        """)
+        header_layout.addWidget(open_dl_btn)
         layout.addLayout(header_layout)
         
         # Participants list (moved to top for better visibility)
@@ -866,6 +876,18 @@ class SaporaMainWindow(QMainWindow):
         
         # Input area with improved styling
         input_layout = QHBoxLayout()
+
+        # Attachment button (paperclip)
+        attach_btn = QPushButton("📎")
+        attach_btn.setToolTip("Attach file")
+        attach_btn.setFixedWidth(34)
+        attach_btn.clicked.connect(self.open_file_dialog)
+        attach_btn.setStyleSheet("""
+            QPushButton { background-color: #3a3a3a; color: white; border: 1px solid #555; border-radius: 5px; padding: 6px 8px; }
+            QPushButton:hover { background-color: #444; }
+            QPushButton:pressed { background-color: #333; }
+        """)
+
         self.chat_input = QLineEdit()
         self.chat_input.setPlaceholderText("Type your message here...")
         self.chat_input.returnPressed.connect(self.send_chat_message)
@@ -882,7 +904,7 @@ class SaporaMainWindow(QMainWindow):
                 border: 2px solid #4CAF50;
             }
         """)
-        
+
         send_btn = QPushButton("Send")
         send_btn.clicked.connect(self.send_chat_message)
         send_btn.setStyleSheet("""
@@ -901,13 +923,12 @@ class SaporaMainWindow(QMainWindow):
                 background-color: #3d8b40;
             }
         """)
-        
+
+        input_layout.addWidget(attach_btn)
         input_layout.addWidget(self.chat_input, 1)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
-        
-        return panel
-    
+
     def create_control_bar(self):
         """Creates the bottom control bar with action buttons"""
         bar = QFrame()
@@ -1429,10 +1450,28 @@ class SaporaMainWindow(QMainWindow):
             sender = obj.get('sender', 'someone')
             size = obj.get('size')
             self.chat_display.append(f"<i>📥 {sender} shared {fname} ({size or ''} bytes)</i>")
-            # Auto-download to downloads folder
-            downloads = (Path(__file__).parent / 'downloads')
-            downloads.mkdir(parents=True, exist_ok=True)
-            self.file_thread = FileTransferThread(self.file_client, 'download', fname, save_path=str(downloads))
+
+            # Ask user where to save
+            choice = QMessageBox.question(
+                self,
+                "File Received",
+                f"Download '{fname}' to default Downloads folder?\nChoose 'No' to select a folder.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+
+            if choice == QMessageBox.StandardButton.Yes:
+                save_dir = (Path(__file__).parent / 'downloads')
+            else:
+                dir_path = QFileDialog.getExistingDirectory(self, "Select Download Folder", str(Path(__file__).parent))
+                if not dir_path:
+                    return
+                save_dir = Path(dir_path)
+
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            self.file_thread = FileTransferThread(self.file_client, 'download', fname, save_path=str(save_dir))
             self.file_thread.status_update.connect(self.file_status_signal.emit)
             def _after(ok):
                 try:
@@ -1446,10 +1485,31 @@ class SaporaMainWindow(QMainWindow):
                         self.chat_client.send_message(f"Downloaded {fname}", target=sender)
                     except Exception:
                         pass
+                # Offer to open folder
+                if ok:
+                    try:
+                        open_choice = QMessageBox.question(
+                            self,
+                            "Open Folder",
+                            "Open downloads folder?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                        )
+                        if open_choice == QMessageBox.StandardButton.Yes:
+                            QDesktopServices.openUrl(QUrl.fromLocalFile(str(save_dir.resolve())))
+                    except Exception:
+                        pass
             self.file_thread.transfer_complete.connect(_after)
             self.file_thread.start()
         except Exception as e:
             self.show_notification(f"File announce error: {e}")
+
+    def open_downloads_folder(self):
+        try:
+            downloads = (Path(__file__).parent / 'downloads').resolve()
+            downloads.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(downloads)))
+        except Exception as e:
+            self.show_notification(f"Open downloads error: {e}")
     
     # ========================================================================
     # SCREEN SHARE HANDLING

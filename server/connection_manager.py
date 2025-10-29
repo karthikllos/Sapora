@@ -271,8 +271,8 @@ class ConnectionManager:
                 threading.Thread(target=lambda: broadcast_user_list(self), daemon=True).start()
 
     def unregister_stream(self, stream_type: str, key):
-        """Optional: remove a stream from stream_clients when client goes stale."""
-        ip = key[0] if isinstance(key, (tuple, list)) else None
+        """Optional: remove a specific UDP stream mapping for an IP."""
+        ip = key[0] if isinstance(key, (tuple, list)) else (key if isinstance(key, str) else None)
         if not ip:
             return
         with self.stream_clients_lock:
@@ -281,18 +281,26 @@ class ConnectionManager:
                     self.stream_clients[ip]['audio'] = None
                 elif stream_type == 'video':
                     self.stream_clients[ip]['video'] = None
+                self.stream_clients[ip]['last_seen'] = time.time()
 
     def stop(self):
         """Shuts down the connection manager and all associated threads/sockets."""
-        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
-            self.heartbeat_thread.join(timeout=2.0)
+        # Signal heartbeat loop to exit
         self.running = False
+        # Join heartbeat briefly (it's a daemon, but we try to exit cleanly)
+        try:
+            if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+                self.heartbeat_thread.join(timeout=2.0)
+        except Exception:
+            pass
+
+        # Disconnect all TCP clients
         with self.control_clients_lock:
             for sock in list(self.control_clients.keys()):
                 try:
                     sock.send(pack_message(CMD_DISCONNECT))
                     sock.close()
-                except:
+                except Exception:
                     pass
             self.control_clients.clear()
         print("Manager: All client connections closed.")

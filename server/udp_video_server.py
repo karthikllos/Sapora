@@ -37,12 +37,11 @@ class UDPVideoServer(threading.Thread):
                 try:
                     # Receive video frame
                     data, sender_addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
-                    
-                # Update client registration (sender is also a potential receiver)
-                self.manager.register_stream('video', sender_addr)
 
-                # Quick protocol check
-                try:
+                    # Update client registration (sender is also a potential receiver)
+                    self.manager.register_stream('video', sender_addr)
+
+                    # Quick protocol check
                     version, msg_type, payload_length, seq_num, payload = unpack_message(data)
                     if msg_type == STREAM_VIDEO:
                         # Broadcast the raw packet (header + payload) to all listeners
@@ -59,8 +58,8 @@ class UDPVideoServer(threading.Thread):
                         except Exception:
                             pass
                 except ValueError:
-                    continue # Ignore malformed packets
-                        
+                    # Ignore malformed packets
+                    continue
                 except socket.timeout:
                     continue
                 except Exception as e:

@@ -1,8 +1,10 @@
 """
-Helper functions for message serialization and deserialization
+Helper functions for message serialization and deserialization (FIXED)
 Uses struct for efficient binary packing/unpacking
+Enhanced with JSON support for file metadata
 """
 import struct
+import json
 from shared.constants import HEADER_SIZE, PROTOCOL_VERSION, MAX_MESSAGE_SIZE
 
 def pack_message(msg_type, payload=b""):
@@ -18,7 +20,6 @@ def pack_message(msg_type, payload=b""):
     sequence_number = 0
     reserved = 0
     
-    # Format: !BBIHH = Version(1), MsgType(1), PayloadLen(4), SeqNum(4), Reserved(2)
     header = struct.pack(
         '!BBIHH',
         PROTOCOL_VERSION,
@@ -60,44 +61,52 @@ def unpack_message(data):
     return version, msg_type, payload_length, sequence_number, payload
 
 
-# --- File Metadata Helpers (The ones causing the error) ---
+# --- File Metadata Helpers (ENHANCED WITH JSON) ---
 
-def pack_file_metadata(filename, filesize, checksum=""):
-    """Packs file metadata for file transfer"""
-    filename_bytes = filename.encode('utf-8')
-    checksum_bytes = checksum.encode('utf-8')
-    
-    # Format: filename_length(I) + filename + filesize(Q) + checksum_length(I) + checksum
-    metadata = struct.pack('!I', len(filename_bytes))
-    metadata += filename_bytes
-    metadata += struct.pack('!Q', filesize)
-    metadata += struct.pack('!I', len(checksum_bytes))
-    metadata += checksum_bytes
-    
-    return metadata
+def pack_file_metadata(filename, filesize, checksum="", target="all"):
+    """Packs file metadata as JSON for extensibility."""
+    metadata_obj = {
+        'filename': filename,
+        'filesize': filesize,
+        'checksum': checksum,
+        'target': target
+    }
+    return json.dumps(metadata_obj).encode('utf-8')
 
 
 def unpack_file_metadata(data):
-    """Unpacks file metadata"""
-    offset = 0
-    
-    # Unpack filename
-    filename_length = struct.unpack('!I', data[offset:offset+4])[0]
-    offset += 4
-    filename = data[offset:offset+filename_length].decode('utf-8')
-    offset += filename_length
-    
-    # Unpack filesize (Q is 8 bytes for large file support)
-    filesize = struct.unpack('!Q', data[offset:offset+8])[0]
-    offset += 8
-    
-    # Unpack checksum
-    checksum_length = struct.unpack('!I', data[offset:offset+4])[0]
-    offset += 4
-    checksum = data[offset:offset+checksum_length].decode('utf-8')
-    
-    return {
-        'filename': filename,
-        'filesize': filesize,
-        'checksum': checksum
-    }
+    """Unpacks file metadata from JSON."""
+    try:
+        # Try JSON first (new format)
+        metadata_obj = json.loads(data.decode('utf-8'))
+        return {
+            'filename': metadata_obj.get('filename', ''),
+            'filesize': metadata_obj.get('filesize', 0),
+            'checksum': metadata_obj.get('checksum', ''),
+            'target': metadata_obj.get('target', 'all')
+        }
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Fallback to binary format (legacy)
+        offset = 0
+        
+        # Unpack filename
+        filename_length = struct.unpack('!I', data[offset:offset+4])[0]
+        offset += 4
+        filename = data[offset:offset+filename_length].decode('utf-8')
+        offset += filename_length
+        
+        # Unpack filesize
+        filesize = struct.unpack('!Q', data[offset:offset+8])[0]
+        offset += 8
+        
+        # Unpack checksum
+        checksum_length = struct.unpack('!I', data[offset:offset+4])[0]
+        offset += 4
+        checksum = data[offset:offset+checksum_length].decode('utf-8')
+        
+        return {
+            'filename': filename,
+            'filesize': filesize,
+            'checksum': checksum,
+            'target': 'all'  # Legacy format doesn't have target
+        }
