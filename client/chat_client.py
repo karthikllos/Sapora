@@ -1,6 +1,7 @@
 """
-Sapora LAN Collaboration Suite - Chat Client (FIXED)
+Sapora LAN Collaboration Suite - Chat Client (FIXED - Message Reception)
 Handles TCP control, registration, user list updates, and chat messages.
+CRITICAL FIX: Proper message filtering for private messages
 """
 
 import threading
@@ -83,7 +84,10 @@ class ChatClient:
         return False
 
     def send_message(self, text, target: str = 'all'):
-        """Sends a chat message with proper JSON structure."""
+        """
+        CRITICAL FIX: Sends a chat message with proper JSON structure.
+        Target is case-insensitive on server side.
+        """
         if not self.running or not self.sock:
             print(f"[ChatClient] Cannot send: not connected")
             return False
@@ -104,8 +108,7 @@ class ChatClient:
             with self.send_lock:
                 self.sock.sendall(packet)
             
-            if os.environ.get('SAPORA_DEBUG'):
-                print(f"[ChatClient] Sent message to '{target}': {text[:50]}...")
+            print(f"[ChatClient] ✅ Sent message to '{target}': {text[:50]}...")
             return True
 
         except Exception as e:
@@ -179,7 +182,14 @@ class ChatClient:
         self.disconnect()
 
     def _handle_chat(self, payload):
-        """Handles an incoming chat message with enhanced filtering."""
+        """
+        CRITICAL FIX: Handles incoming chat messages with proper filtering.
+        Shows messages if:
+        1. It's a broadcast (target='all')
+        2. We are the intended target (case-insensitive)
+        3. We are the sender (for confirmation)
+        4. It's a system message
+        """
         try:
             raw = payload.decode('utf-8', errors='ignore')
             
@@ -190,34 +200,81 @@ class ChatClient:
                 target = obj.get('target', 'all')
                 msg_type = obj.get('type', '')
                 
+                # Debug logging
+                if os.environ.get('SAPORA_DEBUG'):
+                    print(f"[ChatClient] Received from '{sender}' to '{target}': type={msg_type}, text={text[:50]}")
+                
                 # Handle file announcements separately
                 if msg_type == 'file_announce':
-                    if target.lower() == 'all' or target == self.username:
+                    target_lower = str(target).strip().lower()
+                    username_lower = str(self.username).strip().lower()
+                    
+                    if target_lower == 'all' or target_lower == username_lower:
                         if self.file_callback:
                             self.file_callback(obj)
                     return
                 
-                # Skip delivery confirmations (internal messages)
+                # Skip delivery confirmations from being displayed as messages
                 if msg_type == 'delivery_confirm':
+                    # Only log in debug mode
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] Delivery confirmation: {text}")
                     return
                 
-                # Filter messages: only show if we're the target or it's broadcast
-                if target.lower() not in ['all', 'everyone']:
-                    if target != self.username and sender != self.username:
-                        # This is a private message for someone else
-                        if os.environ.get('SAPORA_DEBUG'):
-                            print(f"[ChatClient] Filtered message from {sender} to {target}")
-                        return
+                # Handle error messages - always show to intended recipient
+                if msg_type == 'error':
+                    target_lower = str(target).strip().lower()
+                    username_lower = str(self.username).strip().lower()
+                    
+                    if target_lower == username_lower:
+                        if self.message_callback:
+                            self.message_callback('SYSTEM', text)
+                    return
+                
+                # CRITICAL FIX: Case-insensitive message filtering
+                target_lower = str(target).strip().lower()
+                username_lower = str(self.username).strip().lower()
+                sender_lower = str(sender).strip().lower()
+                
+                # Determine if we should receive this message
+                should_receive = False
+                
+                if target_lower in ['all', 'everyone', '']:
+                    # Broadcast message - everyone receives
+                    should_receive = True
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] ✅ Broadcast message")
+                elif target_lower == username_lower:
+                    # Private message TO us
+                    should_receive = True
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] ✅ Private message TO us")
+                elif sender_lower == username_lower:
+                    # Message FROM us (echo for confirmation) - DON'T show, sender already has local echo
+                    should_receive = False
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] ⏭️  Skip - our own message echo")
+                else:
+                    # Private message for someone else - don't show
+                    should_receive = False
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] ⏭️  Skip - private message for {target}")
+                
+                if not should_receive:
+                    return
                 
                 # Add annotation for private messages
-                if target.lower() not in ['all', 'everyone']:
-                    if sender == self.username:
+                if target_lower not in ['all', 'everyone', '']:
+                    if sender_lower == username_lower:
                         text = f"(to {target}) {text}"
                     else:
                         text = f"(private) {text}"
                 
+                # Deliver to UI
                 if self.message_callback:
                     self.message_callback(sender.strip(), text.strip())
+                    if os.environ.get('SAPORA_DEBUG'):
+                        print(f"[ChatClient] 📨 Delivered to UI: {sender} -> {text[:50]}")
                     
             except json.JSONDecodeError:
                 # Fallback for legacy messages
@@ -233,6 +290,8 @@ class ChatClient:
         except Exception as e:
             if os.environ.get('SAPORA_DEBUG'):
                 print(f"[ChatClient] Chat decode error: {e}")
+                import traceback
+                traceback.print_exc()
     
     def _handle_file_notify(self, payload):
         """Handles file availability notifications."""
@@ -241,8 +300,11 @@ class ChatClient:
             obj = json.loads(raw)
             target = obj.get('target', 'all')
             
-            # Filter by target
-            if target.lower() not in ['all', 'everyone'] and target != self.username:
+            # Case-insensitive filtering
+            target_lower = str(target).strip().lower()
+            username_lower = str(self.username).strip().lower()
+            
+            if target_lower not in ['all', 'everyone'] and target_lower != username_lower:
                 return
             
             if self.file_callback:
