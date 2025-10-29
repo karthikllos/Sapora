@@ -1124,58 +1124,81 @@ class SaporaMainWindow(QMainWindow):
         target_display = 'Everyone'
         
         try:
-            # Get target from dropdown
+            # Get target from dropdown and clean it
             if hasattr(self, 'chat_target') and self.chat_target.currentIndex() >= 0:
                 val = self.chat_target.currentText().strip()
-                # Remove emoji prefix if present
+                # Remove emoji prefixes
                 val_clean = val.replace('📢', '').replace('👤', '').strip()
                 
                 if val_clean and val_clean.lower() not in ['all', 'everyone']:
                     target = val_clean
                     target_display = val_clean
             
+            print(f"[UI] Sending message to '{target}': {text}")
+            
             # Send message via chat client
-            if self.chat_client:
+            if self.chat_client and self.chat_client.running:
                 sent = self.chat_client.send_message(text, target=target)
+                print(f"[UI] Message sent result: {sent}")
+            else:
+                print(f"[UI] Chat client not ready: running={getattr(self.chat_client, 'running', None)}")
             
             # Local echo with enhanced formatting
             timestamp = datetime.now().strftime("%H:%M")
             
-            if target.lower() == 'all':
-                # Public message
-                formatted_msg = f"""
-                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #4CAF50;'>
-                    <span style='color: #888; font-size: 10px;'>{timestamp}</span>
-                    <span style='color: #4CAF50; font-weight: bold;'> You </span>
-                    <span style='color: #aaa;'>→ Everyone</span><br/>
-                    <span style='color: #fff;'>{text}</span>
-                </div>
-                """
+            if sent:
+                if target.lower() == 'all':
+                    # Public message
+                    formatted_msg = f"""
+                    <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #4CAF50;'>
+                        <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                        <span style='color: #4CAF50; font-weight: bold;'> You </span>
+                        <span style='color: #aaa;'>→ Everyone</span><br/>
+                        <span style='color: #fff;'>{text}</span>
+                    </div>
+                    """
+                else:
+                    # Private message
+                    formatted_msg = f"""
+                    <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #FF9800;'>
+                        <span style='color: #888; font-size: 10px;'>{timestamp}</span>
+                        <span style='color: #4CAF50; font-weight: bold;'> You </span>
+                        <span style='color: #FF9800;'>→ {target_display} (private)</span><br/>
+                        <span style='color: #fff;'>{text}</span>
+                    </div>
+                    """
+                
+                self.chat_display.append(formatted_msg)
             else:
-                # Private message
-                formatted_msg = f"""
-                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #FF9800;'>
+                # Show error message
+                error_msg = f"""
+                <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #f44336;'>
                     <span style='color: #888; font-size: 10px;'>{timestamp}</span>
-                    <span style='color: #4CAF50; font-weight: bold;'> You </span>
-                    <span style='color: #FF9800;'>→ {target_display} (private)</span><br/>
-                    <span style='color: #fff;'>{text}</span>
+                    <span style='color: #f44336; font-weight: bold;'> ERROR </span><br/>
+                    <span style='color: #fff;'>Failed to send: {text}</span><br/>
+                    <span style='color: #888; font-size: 10px; font-style: italic;'>Check your connection</span>
                 </div>
                 """
+                self.chat_display.append(error_msg)
+                self.show_notification("❌ Failed to send message - check connection")
             
-            self.chat_display.append(formatted_msg)
-            
-            if not sent:
-                # Mark failed send
-                self.chat_display.append(
-                    '<div style="color:#f44336; font-style: italic; font-size: 11px; margin-left: 10px;">⚠ Message delivery failed</div>'
-                )
-                self.show_notification("❌ Failed to send message")
+            # Auto-scroll to bottom
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.chat_display.setTextCursor(cursor)
             
         except Exception as e:
-            self.chat_display.append(
-                f'<div style="color:#f44336; font-style: italic; font-size: 11px; margin-left: 10px;">⚠ Error: {str(e)}</div>'
-            )
-            self.show_notification(f"Chat error: {e}")
+            error_msg = f"""
+            <div style='margin: 5px 0; padding: 8px; background-color: #2a2a2a; border-radius: 5px; border-left: 3px solid #f44336;'>
+                <span style='color: #f44336; font-weight: bold;'> ERROR </span><br/>
+                <span style='color: #fff;'>Exception: {str(e)}</span>
+            </div>
+            """
+            self.chat_display.append(error_msg)
+            self.show_notification(f"❌ Chat error: {e}")
+            print(f"[UI] Chat exception: {e}")
+            import traceback
+            traceback.print_exc()
     
     # ---- Signal slots (these run in GUI thread) ----
     def _on_chat_message_signal(self, sender, message):

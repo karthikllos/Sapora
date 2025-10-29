@@ -1,5 +1,5 @@
 """
-Sapora LAN Collaboration Suite - Chat Client (Optimized)
+Sapora LAN Collaboration Suite - Chat Client (Fixed)
 Handles TCP control, registration, user list updates, and chat messages.
 """
 
@@ -71,22 +71,24 @@ class ChatClient:
     def send_message(self, text, target: str = 'all'):
         """Sends a chat message; supports target ('all' or username')."""
         if not self.running or not self.sock:
+            print(f"[ChatClient] Cannot send: not connected (running={self.running}, sock={self.sock})")
             return False
 
         try:
-            try:
-                payload_obj = {
-                    'sender': self.username,
-                    'target': target or 'all',
-                    'text': text,
-                    'meeting_id': getattr(self, 'meeting_id', None)
-                }
-                payload = json.dumps(payload_obj).encode('utf-8')
-            except Exception:
-                payload = f"{self.username}: {text}".encode('utf-8')
+            # Always create properly structured JSON payload
+            payload_obj = {
+                'sender': self.username,
+                'target': target or 'all',
+                'text': text,
+                'meeting_id': self.meeting_id
+            }
+            payload = json.dumps(payload_obj).encode('utf-8')
             packet = pack_message(MSG_CHAT, payload)
+            
             with self.send_lock:
                 self.sock.sendall(packet)
+            
+            print(f"[ChatClient] Sent message to '{target}': {text[:50]}...")
             return True
 
         except Exception as e:
@@ -100,6 +102,7 @@ class ChatClient:
             try:
                 raw = read_tcp_message(self.sock)
                 if not raw:
+                    print("[ChatClient] Connection closed by server")
                     break
 
                 version, msg_type, _, _, payload = unpack_message(raw)
@@ -124,7 +127,8 @@ class ChatClient:
                         pass
                     print(f"[ChatClient] Unknown message type: {msg_type}")
 
-            except (ConnectionResetError, OSError):
+            except (ConnectionResetError, OSError) as e:
+                print(f"[ChatClient] Connection error: {e}")
                 break
             except Exception as e:
                 print(f"[ChatClient] Listen Error: {e}")
@@ -136,27 +140,49 @@ class ChatClient:
         """Handles an incoming chat message."""
         try:
             raw = payload.decode('utf-8', errors='ignore')
+            
             try:
                 obj = json.loads(raw)
-                # Filter by target if present
-                target = (obj.get('target') or 'all') if isinstance(obj, dict) else 'all'
-                if target.lower() != 'all' and target != self.username:
-                    return
-                if obj.get('type') == 'file_announce':
-                    # Deliver file announce to intended recipients only
-                    if self.file_callback:
-                        self.file_callback(obj)
-                    return
                 sender = obj.get('sender', 'SYSTEM')
-                text = obj.get('text', raw)
-                # Annotate private messages
+                text = obj.get('text', '')
+                target = obj.get('target', 'all')
+                
+                # Handle file announcements separately
+                if obj.get('type') == 'file_announce':
+                    # Only process if we're the target
+                    if target.lower() == 'all' or target == self.username:
+                        if self.file_callback:
+                            self.file_callback(obj)
+                    return
+                
+                # Filter messages: only show if we're the target or it's a broadcast
+                # DON'T filter here - let the UI handle it, or we won't see our own messages
+                if target.lower() != 'all' and target != self.username and sender != self.username:
+                    # This message is for someone else (private message not for us)
+                    print(f"[ChatClient] Filtered out message from {sender} to {target}")
+                    return
+                
+                # Add target annotation for private messages
                 if target.lower() != 'all':
-                    text = f"(to {target}) {text}"
-            except Exception:
-                msg = raw
-                sender, text = (msg.split(':', 1) + [""])[:2] if ':' in msg else ("SYSTEM", msg)
-            if self.message_callback:
-                self.message_callback(sender.strip(), text.strip())
+                    if sender == self.username:
+                        text = f"(to {target}) {text}"
+                    else:
+                        text = f"(private) {text}"
+                
+                if self.message_callback:
+                    self.message_callback(sender.strip(), text.strip())
+                    
+            except json.JSONDecodeError:
+                # Fallback for non-JSON messages
+                if ':' in raw:
+                    sender, text = raw.split(':', 1)
+                else:
+                    sender = "SYSTEM"
+                    text = raw
+                
+                if self.message_callback:
+                    self.message_callback(sender.strip(), text.strip())
+                    
         except Exception as e:
             print(f"[ChatClient] Chat Decode Error: {e}")
     
@@ -180,12 +206,13 @@ class ChatClient:
                 'filename': filename,
                 'sender': self.username,
                 'target': target or 'all',
-                'meeting_id': getattr(self, 'meeting_id', None)
+                'meeting_id': self.meeting_id
             }
             payload = json.dumps(obj).encode('utf-8')
             packet = pack_message(MSG_CHAT, payload)
             with self.send_lock:
                 self.sock.sendall(packet)
+            print(f"[ChatClient] Sent file announce: {filename} to {target}")
             return True
         except Exception as e:
             print(f"[ChatClient] File announce send error: {e}")
@@ -195,6 +222,7 @@ class ChatClient:
         """Handles updated user list from the server."""
         try:
             user_list = json.loads(payload.decode('utf-8'))
+            print(f"[ChatClient] Received user list: {user_list}")
             if self.user_list_callback:
                 self.user_list_callback(user_list)
         except Exception as e:
