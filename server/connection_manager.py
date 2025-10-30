@@ -15,7 +15,7 @@ from shared.constants import (
     CONNECTION_TIMEOUT, SOCKET_TIMEOUT,CLIENT_IDLE_TIMEOUT
 )
 from shared.protocol import CMD_HEARTBEAT, CMD_USER_LIST, CMD_DISCONNECT
-from server.utils import broadcast_user_list, pack_message
+from server.utils import broadcast_user_list, pack_message, broadcast_room_user_list
 
 class ConnectionManager:
     """
@@ -54,20 +54,28 @@ class ConnectionManager:
                 'room': 'default'
             }
             print(f"Manager: Client added: {username} from {address[0]}. Total: {len(self.control_clients)}")
-            
-        # Broadcast updated list
+            current_room = 'default'
+        
+        # Broadcast updated lists (global + room-specific) immediately
         broadcast_user_list(self)
+        try:
+            if self.server_ref:
+                broadcast_room_user_list(self.server_ref, current_room)
+        except Exception:
+            pass
 
     def remove_client(self, client_socket):
         """Removes a disconnected TCP client."""
         username = "Unknown"
         address = ("0.0.0.0", 0)
+        room_id = 'default'
         
         with self.control_clients_lock:
             if client_socket in self.control_clients:
                 client_info = self.control_clients.pop(client_socket)
                 username = client_info['username']
                 address = client_info['addr']
+                room_id = client_info.get('room', 'default')
                 
                 try:
                     client_socket.close()
@@ -81,24 +89,43 @@ class ConnectionManager:
             if address[0] in self.stream_clients:
                  del self.stream_clients[address[0]]
         
-        # Broadcast updated list
+        # Broadcast updated lists
         if username != "Unknown":
             broadcast_user_list(self)
+            try:
+                if self.server_ref and room_id:
+                    broadcast_room_user_list(self.server_ref, room_id)
+            except Exception:
+                pass
         
         return username, address
 
     def update_client_status(self, client_socket, username=None, room=None):
-        """Updates client's last seen time and optionally username and room."""
+        """Updates client's last seen time and optionally username and room, then broadcasts updates."""
+        should_broadcast_global = False
+        room_to_broadcast = None
         with self.control_clients_lock:
             if client_socket in self.control_clients:
-                self.control_clients[client_socket]['last_seen'] = time.time()
-                if username and self.control_clients[client_socket]['username'] == "Unknown":
-                     self.control_clients[client_socket]['username'] = username
-                     threading.Thread(target=lambda: broadcast_user_list(self), daemon=True).start()
+                info = self.control_clients[client_socket]
+                info['last_seen'] = time.time()
+                if username and info['username'] == "Unknown":
+                    info['username'] = username
+                    should_broadcast_global = True
                 if room:
-                     self.control_clients[client_socket]['room'] = room
-                return True
-            return False
+                    info['room'] = room
+                room_to_broadcast = info.get('room', room)
+            else:
+                return False
+        
+        # Broadcast outside lock
+        if should_broadcast_global:
+            threading.Thread(target=lambda: broadcast_user_list(self), daemon=True).start()
+        try:
+            if self.server_ref and room_to_broadcast:
+                threading.Thread(target=lambda: broadcast_room_user_list(self.server_ref, room_to_broadcast), daemon=True).start()
+        except Exception:
+            pass
+        return True
 
     def update_client_status_by_ip(self, ip_address, username=None, room=None):
         """Updates client's status by IP address (for UDP registrations)."""

@@ -966,11 +966,7 @@ class SaporaMainWindow(QMainWindow):
         self.chat_btn.clicked.connect(self.toggle_chat)
         layout.addWidget(self.chat_btn)
         
-        # File transfer button
-        self.file_btn = QPushButton("📁 Share File")
-        self.file_btn.setObjectName("fileButton")
-        self.file_btn.clicked.connect(self.open_file_dialog)
-        layout.addWidget(self.file_btn)
+        # (Removed bottom file button; use 📎 in chat panel for file sharing)
         
         # Screen share button
         self.screen_btn = QPushButton("🖥 Share Screen")

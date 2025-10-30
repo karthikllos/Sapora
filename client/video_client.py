@@ -151,8 +151,20 @@ class VideoClient:
 
     def _recv_loop(self):
         """Continuously receives and processes video frames."""
+        last_keepalive = 0.0
+        import json
         while self.running:
             try:
+                # Periodic keepalive to prevent server from pruning our UDP listener mapping
+                now = time.time()
+                if now - last_keepalive > 5.0:
+                    try:
+                        reg = {'username': self.username, 'stream_type': 'video'}
+                        self.sock.sendto(pack_message(CMD_REGISTER, json.dumps(reg).encode('utf-8')), (self.server_ip, self.server_port))
+                    except Exception:
+                        pass
+                    last_keepalive = now
+
                 data, addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
                 
                 # Unpack and decode
@@ -166,6 +178,7 @@ class VideoClient:
                         self.frame_callback(source_ip, frame) 
                         
             except socket.timeout:
+                # still loop to send keepalives
                 continue
             except ValueError:
                 # Malformed packet, ignore
