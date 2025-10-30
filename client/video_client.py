@@ -28,7 +28,8 @@ class VideoClient:
         self.username = username
         self.frame_callback = frame_callback
         
-        self.running = False
+        self.running = False  # Receiver lifecycle
+        self.sending = False  # Sender (camera) lifecycle
         self.cap = None
         self.sock = None  # Single socket for both send and receive
         
@@ -37,8 +38,8 @@ class VideoClient:
     # --- Sender Logic ---
 
     def start_streaming(self, status_callback):
-        """Starts webcam capture and transmission thread."""
-        if self.running:
+        """Starts webcam capture and transmission thread without affecting receiver."""
+        if self.sending:
             return True
             
         try:
@@ -64,7 +65,8 @@ class VideoClient:
                 self.sock.bind(('', 0))
                 self.sock.settimeout(CONNECTION_TIMEOUT)
             
-            self.running = True
+            # Ensure receiver can be running independently; only set sending flag here
+            self.sending = True
             threading.Thread(target=self._send_loop, daemon=True).start()
             status_callback("📹 Streaming video...")
             return True
@@ -75,11 +77,11 @@ class VideoClient:
             return False
 
     def _send_loop(self):
-        """Continuously captures, encodes, and sends frames."""
+        """Continuously captures, encodes, and sends frames while sending is enabled."""
         frame_interval = 1.0 / VIDEO_FPS
         
         try:
-            while self.running:
+            while self.sending:
                 start_time = time.time()
                 
                 ret, frame = self.cap.read()
@@ -104,7 +106,8 @@ class VideoClient:
             if self.running:
                 print(f"VideoClient Send Error: {e}")
         finally:
-            self.stop_streaming()
+            # Stop only the sender resources
+            self._stop_sender_only()
 
     # --- Receiver Logic ---
     
@@ -120,10 +123,11 @@ class VideoClient:
             self.sock.bind(('', 0))
             self.sock.settimeout(CONNECTION_TIMEOUT)
         
-        self.running = True
-        self._register_receiver()
-        
-        threading.Thread(target=self._recv_loop, daemon=True).start()
+        # Start receiver if not already running
+        if not self.running:
+            self.running = True
+            self._register_receiver()
+            threading.Thread(target=self._recv_loop, daemon=True).start()
 
     def _register_receiver(self):
         """Sends registration packet to the server with username and room info."""
@@ -190,16 +194,25 @@ class VideoClient:
     # --- Cleanup ---
 
     def stop_streaming(self):
-        """Cleans up resources and stops threads."""
-        self.running = False
-        
+        """Stops only the sender (camera) without stopping receiver or closing socket."""
+        self.sending = False
+        self._stop_sender_only()
+
+    def _stop_sender_only(self):
+        """Release camera and reset last_frame, keep socket alive for receiving."""
         if self.cap:
             try:
                 self.cap.release()
             except:
                 pass
             self.cap = None
-            
+        self.last_frame = None
+
+    def stop_all(self):
+        """Fully stop both sender and receiver and close socket."""
+        self.sending = False
+        self.running = False
+        self._stop_sender_only()
         if self.sock:
             try:
                 self.sock.close()

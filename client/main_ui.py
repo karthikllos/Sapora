@@ -457,6 +457,7 @@ class SaporaMainWindow(QMainWindow):
         self.video_grid_container = None
         self.ip_to_username: Dict[str, str] = {}  # Map IP addresses to usernames
         self.user_list_data = []  # Store user list for IP mapping
+        self.last_frame_ts_by_source: Dict[str, float] = {}
         
         # Frame storage for display
         self.current_frame = None
@@ -987,8 +988,6 @@ class SaporaMainWindow(QMainWindow):
     # ========================================================================
     # CONNECTION & INITIALIZATION
     # ========================================================================
-    
-    def connect_to_server(self):
         """Establish connection to the server"""
         # Connect chat client (TCP control)
         if self.chat_client.connect():
@@ -1009,6 +1008,16 @@ class SaporaMainWindow(QMainWindow):
             </div>
             """
             self.chat_display.append(welcome_msg)
+            try:
+                # Start video receiver early so we can see others even if our camera is off
+                if self.video_client:
+                    self.video_client.start_receiving()
+                    if not self.video_thread:
+                        self.video_thread = VideoStreamThread(self.video_client)
+                        self.video_thread.status_update.connect(self.show_notification)
+                        self.video_thread.start()
+            except Exception:
+                pass
         else:
             self.status_label.setText("● Connection Failed")
             self.status_label.setStyleSheet("color: #f44336;")
@@ -1028,20 +1037,12 @@ class SaporaMainWindow(QMainWindow):
                 self.video_enabled = True
                 self.video_btn.setText("🎥 Stop Video")
                 self.video_btn.setChecked(True)
-                
-                # Start receiver thread
-                self.video_thread = VideoStreamThread(self.video_client)
-                self.video_thread.status_update.connect(self.show_notification)
-                self.video_thread.start()
         else:
             # Stop video
             try:
                 self.video_client.stop_streaming()
             except Exception:
                 pass
-            if self.video_thread:
-                self.video_thread.stop()
-                self.video_thread.wait(2000)
             
             # Remove local video tile
             self.remove_video_tile('local')
@@ -1072,6 +1073,11 @@ class SaporaMainWindow(QMainWindow):
                 if source_ip:
                     username = self.get_username_for_ip(source_ip)
                     self.add_or_update_video_tile(source_ip, frame, username)
+                    try:
+                        import time as _t
+                        self.last_frame_ts_by_source[source_ip] = _t.time()
+                    except Exception:
+                        pass
                 else:
                     # Old style frame without source IP, treat as generic remote
                     self.add_or_update_video_tile('remote', frame, 'Remote')
@@ -1088,6 +1094,19 @@ class SaporaMainWindow(QMainWindow):
                     self.add_or_update_video_tile('local', frame, self.username)
             except Exception:
                 pass
+        # Clean up stale remote tiles to avoid freeze when a sender stops
+        try:
+            import time as _t
+            now_ts = _t.time()
+            stale_keys = []
+            for src, ts in list(self.last_frame_ts_by_source.items()):
+                if now_ts - ts > 2.0:
+                    stale_keys.append(src)
+            for src in stale_keys:
+                self.last_frame_ts_by_source.pop(src, None)
+                self.remove_video_tile(src)
+        except Exception:
+            pass
     
     # ========================================================================
     # AUDIO HANDLING
