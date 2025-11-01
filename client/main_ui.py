@@ -988,12 +988,34 @@ class SaporaMainWindow(QMainWindow):
     # ========================================================================
     # CONNECTION & INITIALIZATION
     # ========================================================================
+    def connect_to_server(self):
         """Establish connection to the server"""
         # Connect chat client (TCP control)
         if self.chat_client.connect():
             # Start screen viewer in background to receive remote shares
             import threading
             threading.Thread(target=self.screen_viewer.start, daemon=True).start()
+
+            # Start video receiver immediately so we can watch others without turning on camera
+            try:
+                if self.video_client:
+                    self.video_client.start_receiving()
+                if not self.video_thread or not self.video_thread.isRunning():
+                    self.video_thread = VideoStreamThread(self.video_client)
+                    self.video_thread.status_update.connect(self.show_notification)
+                    self.video_thread.start()
+            except Exception:
+                pass
+
+            # Start audio playback (receive-only) so we can hear others without unmuting
+            try:
+                if not self.audio_thread or not self.audio_thread.isRunning():
+                    self.audio_thread = AudioStreamThread(self.audio_client)
+                    self.audio_thread.status_update.connect(self.show_notification)
+                    self.audio_thread.start()
+            except Exception:
+                pass
+
             self.status_label.setText("● Connected")
             self.status_label.setStyleSheet("color: #4CAF50;")
             self.show_notification("Connected to server!")
@@ -1008,16 +1030,6 @@ class SaporaMainWindow(QMainWindow):
             </div>
             """
             self.chat_display.append(welcome_msg)
-            try:
-                # Start video receiver early so we can see others even if our camera is off
-                if self.video_client:
-                    self.video_client.start_receiving()
-                    if not self.video_thread:
-                        self.video_thread = VideoStreamThread(self.video_client)
-                        self.video_thread.status_update.connect(self.show_notification)
-                        self.video_thread.start()
-            except Exception:
-                pass
         else:
             self.status_label.setText("● Connection Failed")
             self.status_label.setStyleSheet("color: #f44336;")
