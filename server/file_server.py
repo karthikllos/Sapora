@@ -282,6 +282,15 @@ class FileHandler(threading.Thread):
                     target_sock = participants_ci.get(target_lower)
                     targets = [target_sock] if target_sock else []
 
+                # Exclude sender from targets to avoid self-popup
+                try:
+                    sndr = notification.get('sender')
+                    if sndr and sndr in participants:
+                        sender_sock = participants.get(sndr)
+                        targets = [s for s in targets if s and s != sender_sock]
+                except Exception:
+                    pass
+
                 # Send notification to targets
                 notification_json = json.dumps(notification)
                 packet = pack_message(MSG_CHAT, notification_json.encode('utf-8'))
