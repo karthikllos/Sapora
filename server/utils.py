@@ -138,20 +138,20 @@ def broadcast_room_user_list(server, room_id: str):
 # --- Audio Mixing Helpers ---
 
 def mix_audio_chunks(chunks):
-    """Mixes a list of raw PCM audio chunks (np.int16, Mono) by averaging."""
+    """Mix a list of raw PCM audio chunks (np.int16, mono) with gentle normalization.
+    - Aligns lengths, averages sources, removes DC, and normalizes toward a target RMS with limiting.
+    """
     if not chunks:
         return None
-        
     try:
         arrays = []
+        bytes_per_chunk = AUDIO_CHUNK * AUDIO_CHANNELS * AUDIO_FORMAT_PCM
         for chunk in chunks:
-            bytes_per_chunk = AUDIO_CHUNK * AUDIO_CHANNELS * AUDIO_FORMAT_PCM
+            # accept only expected-size chunks to keep cadence clean
             if len(chunk) != bytes_per_chunk:
-                continue 
-
+                continue
             arr = np.frombuffer(chunk, dtype=np.int16)
             arrays.append(arr)
-        
         if not arrays:
             return None
 
@@ -159,15 +159,22 @@ def mix_audio_chunks(chunks):
         padded = []
         for arr in arrays:
             if len(arr) < max_len:
-                padded_arr = np.pad(arr, (0, max_len - len(arr)), mode='constant')
-                padded.append(padded_arr)
+                padded.append(np.pad(arr, (0, max_len - len(arr)), mode='constant'))
             else:
                 padded.append(arr)
-        
-        mixed = np.mean(padded, axis=0).astype(np.int16)
-        
+
+        # Average in float32 to maintain precision, then DC-remove and normalize
+        mixed_f = np.mean(np.stack(padded, axis=0).astype(np.float32), axis=0)
+        # Remove DC offset
+        mixed_f -= np.mean(mixed_f)
+        # Normalize toward target RMS with a soft limit
+        rms = float(np.sqrt(np.mean(mixed_f * mixed_f)) + 1e-9)
+        target_rms = 6000.0  # ~ -14 dBFS target loudness for voice
+        gain = min(2.0, target_rms / rms)
+        mixed_f *= gain
+        # Hard limit to int16 range
+        mixed = np.clip(mixed_f, -32768.0, 32767.0).astype(np.int16)
         return mixed.tobytes()
-        
     except Exception as e:
         if os.environ.get('SAPORA_DEBUG'):
             print(f"[mix_audio_chunks] Error: {e}")

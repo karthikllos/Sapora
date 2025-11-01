@@ -13,6 +13,7 @@ import time
 import pyaudio
 import sys
 import os
+import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -50,6 +51,8 @@ class AudioClient:
         
         # Mic mute state (True = sending audio, False = muted)
         self.mic_enabled = True
+        # simple state for high-pass filter
+        self._hp_prev = 0
 
     # --- Sender Logic (Microphone) ---
 
@@ -232,12 +235,25 @@ class AudioClient:
 
             if msg_type == STREAM_AUDIO:
                 try:
-                    # Play mixed audio chunk (non-blocking write)
-                    if self.stream_out:
-                        self.stream_out.write(payload)
+                    if self.stream_out and data:
+                        # Basic high-pass (pre-emphasis) and gentle normalization for clarity
+                        samples = np.frombuffer(payload, dtype=np.int16)
+                        if samples.size:
+                            prev = self._hp_prev
+                            x = samples.astype(np.int32)
+                            x_shift = np.concatenate(([prev], samples[:-1].astype(np.int32)))
+                            y = x - (0.98 * x_shift)
+                            self._hp_prev = int(samples[-1])
+                            y = y.astype(np.float32)
+                            # normalize toward moderate RMS
+                            rms = float(np.sqrt(np.mean(y * y)) + 1e-9)
+                            target_rms = 4500.0
+                            gain = min(1.5, target_rms / rms)
+                            y *= gain
+                            y = np.clip(y, -32768.0, 32767.0).astype(np.int16)
+                            self.stream_out.write(y.tobytes())
                 except Exception as e:
                     # ignore bursts/underruns
-                    # print(f"AudioClient Playback error: {e}")
                     pass
 
     # --- Cleanup ---
