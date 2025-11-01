@@ -17,7 +17,7 @@ from collections import deque
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.constants import UDP_STREAM_BUFFER, AUDIO_PORT, SOCKET_TIMEOUT, AUDIO_CHUNK
+from shared.constants import UDP_STREAM_BUFFER, AUDIO_PORT, SOCKET_TIMEOUT, AUDIO_CHUNK, AUDIO_RATE
 from shared.protocol import STREAM_AUDIO, CMD_REGISTER
 from server.utils import unpack_message, pack_message, mix_audio_chunks
 
@@ -41,7 +41,8 @@ class UDPAudioServer(threading.Thread):
         self.last_seen = {}
         self.last_seen_lock = threading.Lock()
         
-        self.mix_interval = 0.02  # 20ms mix cycle
+        # Match mix interval to chunk duration to reduce jitter artifacts
+        self.mix_interval = float(AUDIO_CHUNK) / float(AUDIO_RATE)
         self.running = False
         
         self.mixer_thread = threading.Thread(target=self._audio_mixer, daemon=True)

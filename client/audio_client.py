@@ -29,7 +29,7 @@ AUDIO_FORMAT = pyaudio.paInt16
 class AudioClient:
     """Handles all audio I/O: sender, receiver, and PyAudio management."""
 
-    def __init__(self, server_ip, username=None):
+    def _init_(self, server_ip, username=None):
         self.server_ip = server_ip
         self.server_port = AUDIO_PORT
         self.username = username or "user"

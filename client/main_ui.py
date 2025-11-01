@@ -27,7 +27,20 @@ import math
 # Import client modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from client.video_client import VideoClient
-from client.audio_client import AudioClient
+# Robustly load AudioClient from the local file to avoid namespace collisions
+import importlib.util as _ilu
+from pathlib import Path as _Path
+_audio_client_cls = None
+try:
+    _ac_path = (_Path(__file__).parent / 'audio_client.py').resolve()
+    _spec = _ilu.spec_from_file_location('sapora_audio_client', str(_ac_path))
+    _mod = _ilu.module_from_spec(_spec)
+    assert _spec and _spec.loader
+    _spec.loader.exec_module(_mod)
+    _audio_client_cls = getattr(_mod, 'AudioClient', None)
+except Exception:
+    from client.audio_client import AudioClient as _FallbackAudioClient
+    _audio_client_cls = _FallbackAudioClient
 from client.chat_client import ChatClient
 from client.file_client import FileTransferClient
 from client.screen_share_client import ScreenShareClient
@@ -520,7 +533,8 @@ class SaporaMainWindow(QMainWindow):
         )
         
         # Audio Client: file/audio status callbacks will emit signals
-        self.audio_client = AudioClient(
+        # Instantiate AudioClient via robust loader
+        self.audio_client = _audio_client_cls(
             server_ip=self.server_ip,
             username=self.username
         )
