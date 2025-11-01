@@ -33,7 +33,11 @@ class AudioClient:
         self.server_port = AUDIO_PORT
         self.username = username or "user"
         
-        self.running = False
+        # Lifecycle flags
+        self.running = False          # Any audio activity
+        self.sending = False          # Mic capture -> send active
+        self.playing = False          # Playback active
+        
         self.audio = None
         self.stream_out = None
         self.stream_in = None
@@ -50,20 +54,23 @@ class AudioClient:
     # --- Sender Logic (Microphone) ---
 
     def start_streaming(self, status_callback=None):
-        """Starts microphone capture and transmission loop."""
-        if self.running:
-            return True
+        """Starts microphone capture and transmission loop (idempotent)."""
         try:
-            self.audio = pyaudio.PyAudio()
+            # Already sending?
+            if self.send_thread and self.send_thread.is_alive():
+                return True
+            if not self.audio:
+                self.audio = pyaudio.PyAudio()
             
             # Input stream (microphone)
-            self.stream_in = self.audio.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=AUDIO_RATE,
-                input=True,
-                frames_per_buffer=AUDIO_CHUNK
-            )
+            if not self.stream_in:
+                self.stream_in = self.audio.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=AUDIO_RATE,
+                    input=True,
+                    frames_per_buffer=AUDIO_CHUNK
+                )
             
             # FIX: Single socket for both send and receive
             # Bind to ephemeral port so we can receive on same socket
@@ -76,6 +83,7 @@ class AudioClient:
                 self.sock.settimeout(CONNECTION_TIMEOUT)
 
             self.running = True
+            self.sending = True
             self.send_thread = threading.Thread(target=self._send_loop, daemon=True)
             self.send_thread.start()
             if status_callback:
@@ -84,7 +92,7 @@ class AudioClient:
         except Exception as e:
             if status_callback:
                 status_callback(f"❌ Audio stream error: {str(e)}")
-            self.stop_streaming()
+            self.sending = False
             return False
 
     def _send_loop(self):
@@ -92,7 +100,7 @@ class AudioClient:
         # compute ideal sleep per chunk based on sample params:
         chunk_duration = float(AUDIO_CHUNK) / float(AUDIO_RATE)  # seconds
         try:
-            while self.running:
+            while self.sending:
                 loop_start = time.time()
                 try:
                     audio_data = self.stream_in.read(AUDIO_CHUNK, exception_on_overflow=False)
@@ -120,25 +128,37 @@ class AudioClient:
                     time.sleep(sleep_time)
 
         finally:
-            # Ensure resources cleaned when send loop exits
-            self.stop_streaming()
+            # Ensure sender cleaned when loop exits (keep playback/socket alive)
+            try:
+                if self.stream_in:
+                    self.stream_in.stop_stream()
+                    self.stream_in.close()
+            except:
+                pass
+            self.stream_in = None
+            self.sending = False
+            if not self.playing:
+                self.running = False
 
     # --- Receiver Logic (Playback) ---
     
     def start_receiving(self):
-        """Initializes playback stream and starts receiver thread."""
+        """Initializes playback stream and starts receiver thread (idempotent)."""
         try:
+            if self.recv_thread and self.recv_thread.is_alive():
+                return
             if not self.audio:
                 self.audio = pyaudio.PyAudio()
 
             # Output stream
-            self.stream_out = self.audio.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=AUDIO_RATE,
-                output=True,
-                frames_per_buffer=AUDIO_CHUNK
-            )
+            if not self.stream_out:
+                self.stream_out = self.audio.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=AUDIO_RATE,
+                    output=True,
+                    frames_per_buffer=AUDIO_CHUNK
+                )
             
             # FIX: Use single socket (create if not already created by start_streaming)
             if not self.sock:
@@ -151,12 +171,12 @@ class AudioClient:
                 self.sock.settimeout(CONNECTION_TIMEOUT)
             
             self.running = True
+            self.playing = True
             self._register_receiver()
             self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
             self.recv_thread.start()
         except Exception as e:
             print(f"AudioClient Recv Setup Error: {e}")
-            self.stop_streaming()
 
     def _register_receiver(self):
         """Sends registration packet to the server's audio port with username and room info."""
@@ -182,15 +202,26 @@ class AudioClient:
                 print(f"AudioClient Registration Setup Error: {e}")
 
     def _recv_loop(self):
-        """Continuously receives mixed audio and plays it back."""
-        while self.running:
+        """Continuously receives mixed audio and plays it back (with UDP keepalive)."""
+        last_keepalive = 0.0
+        import json
+        while self.playing:
+            # periodic keepalive so server retains our listener mapping
+            now = time.time()
+            if now - last_keepalive > 5.0:
+                try:
+                    reg = {'username': self.username, 'stream_type': 'audio', 'room': 'default'}
+                    self.sock.sendto(pack_message(CMD_REGISTER, json.dumps(reg).encode('utf-8')), (self.server_ip, self.server_port))
+                except Exception:
+                    pass
+                last_keepalive = now
             try:
                 # FIX: Use single socket
                 data, addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
             except socket.timeout:
                 continue
             except Exception as e:
-                if self.running:
+                if self.playing:
                     print(f"AudioClient Recv Error (socket): {e}")
                 break
 
@@ -216,8 +247,10 @@ class AudioClient:
         self.mic_enabled = bool(enabled)
 
     def stop_streaming(self):
-        """Cleans up all audio resources and closes sockets."""
+        """Cleans up all audio resources and closes sockets (stop both sending and playing)."""
         self.running = False
+        self.sending = False
+        self.playing = False
         
         # Close socket (single socket for both send and receive)
         if self.sock:
