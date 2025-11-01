@@ -182,8 +182,23 @@ class AudioClient:
                 print(f"AudioClient Registration Setup Error: {e}")
 
     def _recv_loop(self):
-        """Continuously receives mixed audio and plays it back."""
+        """Continuously receives mixed audio and plays it back and sends periodic keepalives."""
+        last_keepalive = 0.0
+        import json
         while self.running:
+            # Periodic UDP registration keepalive so server retains our listener mapping
+            try:
+                now = time.time()
+                if now - last_keepalive > 5.0:
+                    try:
+                        reg = {'username': self.username, 'stream_type': 'audio', 'room': 'default'}
+                        self.sock.sendto(pack_message(CMD_REGISTER, json.dumps(reg).encode('utf-8')), (self.server_ip, self.server_port))
+                    except Exception:
+                        pass
+                    last_keepalive = now
+            except Exception:
+                pass
+
             try:
                 # FIX: Use single socket
                 data, addr = self.sock.recvfrom(UDP_STREAM_BUFFER)
