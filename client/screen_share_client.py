@@ -53,20 +53,34 @@ class ScreenShareClient:
 
     def start(self):
         """Start as presenter or viewer"""
-        self.connect()  # Try to connect, but continue even if it fails for local preview
-        
         self.running = True
 
         if self.mode == "presenter":
+            # Ensure connection before sending frames; retry until connected or stopped
+            while self.running and not self.connect():
+                time.sleep(1.0)
             self.status_callback("🎬 Presenter Mode: sharing your screen...")
             self._start_presenter()
         else:
+            # Try to connect; if fails, viewer loop will auto-retry
+            self.connect()
             self.status_callback("👁️ Viewer Mode: watching screen share...")
             self._start_viewer()
 
     def _start_presenter(self):
         """Capture and send screen frames to the server"""
         try:
+            # Send a tiny handshake frame once after connect
+            try:
+                if self.socket:
+                    import numpy as _np
+                    import struct as _struct
+                    _mini = _np.zeros((2,2,3), dtype=_np.uint8)
+                    _, _enc = cv2.imencode('.jpg', _mini, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    _bytes = _enc.tobytes()
+                    self.socket.sendall(_struct.pack('!I', len(_bytes)) + _bytes)
+            except Exception:
+                pass
             while self.running:
                 # Capture screen using pyautogui
                 screenshot = pyautogui.screenshot()
@@ -91,9 +105,19 @@ class ScreenShareClient:
                 frame_data = encoded_frame.tobytes()
                 frame_size = len(frame_data)
 
-                # Send size + data if connected; otherwise skip (local preview only)
+                # Send size + data if connected
                 if self.socket:
-                    self.socket.sendall(struct.pack('!I', frame_size) + frame_data)
+                    try:
+                        self.socket.sendall(struct.pack('!I', frame_size) + frame_data)
+                    except Exception:
+                        # Try to reconnect and continue
+                        try:
+                            self.socket.close()
+                        except Exception:
+                            pass
+                        self.socket = None
+                        while self.running and not self.connect():
+                            time.sleep(1.0)
 
                 # Control frame rate
                 time.sleep(0.1)
@@ -110,11 +134,24 @@ class ScreenShareClient:
     def _start_viewer(self):
         """Receive and display frames from the server"""
         try:
+            backoff = 1.0
             while self.running:
+                # Ensure connected; auto-retry with backoff
+                if not self.socket:
+                    while self.running and not self.connect():
+                        time.sleep(backoff)
+                        backoff = min(backoff + 1.0, 5.0)
+                    backoff = 1.0
                 # Read 4-byte size header
                 size_data = self._recv_exact(4)
                 if not size_data:
-                    break
+                    try:
+                        if self.socket:
+                            self.socket.close()
+                    except Exception:
+                        pass
+                    self.socket = None
+                    continue
                 frame_size = struct.unpack('!I', size_data)[0]
 
                 # Check for stop control packet (frame_size = 0)
@@ -134,7 +171,13 @@ class ScreenShareClient:
                 # Read frame data
                 frame_data = self._recv_exact(frame_size)
                 if not frame_data:
-                    break
+                    try:
+                        if self.socket:
+                            self.socket.close()
+                    except Exception:
+                        pass
+                    self.socket = None
+                    continue
 
                 # Decode JPEG to image
                 np_frame = np.frombuffer(frame_data, dtype=np.uint8)

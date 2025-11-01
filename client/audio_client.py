@@ -11,6 +11,7 @@ import threading
 import socket
 import time
 import pyaudio
+import numpy as np
 import sys
 import os
 
@@ -54,22 +55,11 @@ class AudioClient:
     # --- Sender Logic (Microphone) ---
 
     def start_streaming(self, status_callback=None):
-<<<<<<< HEAD
-        """Starts microphone capture and transmission loop."""
-        # Do not block starting the sender if the receiver is already running
-        try:
-            if self.send_thread and self.send_thread.is_alive():
-                return True
-        except Exception:
-            pass
-        try:
-=======
         """Starts microphone capture and transmission loop (idempotent)."""
         try:
             # Already sending?
             if self.send_thread and self.send_thread.is_alive():
                 return True
->>>>>>> 54507a3c14bdcc659f890804c07dcb008d50a6e8
             if not self.audio:
                 self.audio = pyaudio.PyAudio()
             
@@ -139,27 +129,17 @@ class AudioClient:
                     time.sleep(sleep_time)
 
         finally:
-<<<<<<< HEAD
-            # Do not shut down receiver here; just close input stream
-=======
             # Ensure sender cleaned when loop exits (keep playback/socket alive)
->>>>>>> 54507a3c14bdcc659f890804c07dcb008d50a6e8
             try:
                 if self.stream_in:
                     self.stream_in.stop_stream()
                     self.stream_in.close()
-<<<<<<< HEAD
-            except Exception:
-                pass
-            self.stream_in = None
-=======
             except:
                 pass
             self.stream_in = None
             self.sending = False
             if not self.playing:
                 self.running = False
->>>>>>> 54507a3c14bdcc659f890804c07dcb008d50a6e8
 
     # --- Receiver Logic (Playback) ---
     
@@ -255,7 +235,16 @@ class AudioClient:
                 try:
                     # Play mixed audio chunk (non-blocking write)
                     if self.stream_out:
-                        self.stream_out.write(payload)
+                        # Simple echo mitigation: attenuate playback when mic is active
+                        if self.mic_enabled:
+                            try:
+                                samples = np.frombuffer(payload, dtype=np.int16)
+                                atten = (samples * 0.7).astype(np.int16)
+                                self.stream_out.write(atten.tobytes())
+                            except Exception:
+                                self.stream_out.write(payload)
+                        else:
+                            self.stream_out.write(payload)
                 except Exception as e:
                     # ignore bursts/underruns
                     # print(f"AudioClient Playback error: {e}")
