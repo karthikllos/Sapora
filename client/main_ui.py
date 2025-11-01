@@ -140,7 +140,7 @@ class LoginDialog(QDialog):
         layout.setSpacing(12)
         
         # Title
-        title = QLabel("🎥 Sapora Video Conference")
+        title = QLabel(" Sapora Video Conference")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         layout.addWidget(title)
@@ -345,7 +345,7 @@ class VideoTileWidget(QWidget):
             border: 2px solid #333;
             border-radius: 8px;
         """)
-        self.video_label.setText("📹\n\nNo Video")
+        self.video_label.setText("\n\nNo Video")
         layout.addWidget(self.video_label)
         
         # Username label
@@ -406,7 +406,7 @@ class VideoTileWidget(QWidget):
     def clear_video(self):
         """Clear the video display"""
         self.video_label.clear()
-        self.video_label.setText("📹\n\nNo Video")
+        self.video_label.setText("\n\nNo Video")
         self.last_frame = None
 
 
@@ -1408,7 +1408,7 @@ class SaporaMainWindow(QMainWindow):
             self,
             "Select File to Share",
             "",
-            "All Files (*.*)"
+            "All Files (*)"
         )
         
         if file_path:
