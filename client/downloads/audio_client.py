@@ -51,25 +51,19 @@ class AudioClient:
 
     def start_streaming(self, status_callback=None):
         """Starts microphone capture and transmission loop."""
-        # Do not block starting the sender if the receiver is already running
+        if self.running:
+            return True
         try:
-            if self.send_thread and self.send_thread.is_alive():
-                return True
-        except Exception:
-            pass
-        try:
-            if not self.audio:
-                self.audio = pyaudio.PyAudio()
+            self.audio = pyaudio.PyAudio()
             
             # Input stream (microphone)
-            if not self.stream_in:
-                self.stream_in = self.audio.open(
-                    format=AUDIO_FORMAT,
-                    channels=AUDIO_CHANNELS,
-                    rate=AUDIO_RATE,
-                    input=True,
-                    frames_per_buffer=AUDIO_CHUNK
-                )
+            self.stream_in = self.audio.open(
+                format=AUDIO_FORMAT,
+                channels=AUDIO_CHANNELS,
+                rate=AUDIO_RATE,
+                input=True,
+                frames_per_buffer=AUDIO_CHUNK
+            )
             
             # FIX: Single socket for both send and receive
             # Bind to ephemeral port so we can receive on same socket
@@ -126,14 +120,8 @@ class AudioClient:
                     time.sleep(sleep_time)
 
         finally:
-            # Do not shut down receiver here; just close input stream
-            try:
-                if self.stream_in:
-                    self.stream_in.stop_stream()
-                    self.stream_in.close()
-            except Exception:
-                pass
-            self.stream_in = None
+            # Ensure resources cleaned when send loop exits
+            self.stop_streaming()
 
     # --- Receiver Logic (Playback) ---
     
